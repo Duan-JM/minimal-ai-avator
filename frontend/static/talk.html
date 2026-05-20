@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Chat | Duix</title>
+    
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+            overflow: hidden;
+            height: 100vh;
+            background: #000;
+        }
+
+        /* 全屏视频容器 */
+        .video-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #remoteVideo {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            /* GPU 硬件加速，减少合成层重绘 */
+            transform: translateZ(0);
+            will-change: contents;
+            backface-visibility: hidden;
+        }
+        
+        /* 移动端视频优化 */
+        @media (max-width: 768px) {
+            #remoteVideo {
+                object-fit: contain;
+            }
+        }
+        
+        /* 横屏模式优化 */
+        @media (orientation: landscape) {
+            #remoteVideo {
+                object-fit: contain;
+            }
+        }
+
+        /* 加载状态遮罩 */
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+            transition: opacity 0.5s;
+            overflow: hidden;
+        }
+
+        /* 背景图层 */
+        .loading-background {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            filter: blur(20px) brightness(0.6);
+            transform: scale(1.1);  /* 放大以消除模糊边缘 */
+        }
+
+        /* 前景内容 */
+        .loading-content {
+            position: relative;
+            z-index: 2;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .loading-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .loading-icon {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 1.5rem;
+            animation: pulse 2s ease-in-out infinite;
+            overflow: hidden;
+            background: white;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        .loading-icon img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .loading-icon i {
+            font-size: 2.5rem;
+            color: #7c3aed;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        .loading-text {
+            color: white;
+            font-size: 1.2rem;
+            font-weight: 500;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
+            margin-bottom: 0.5rem;
+        }
+
+        .loading-progress {
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 0.9rem;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6);
+        }
+
+        /* 顶部导航栏 */
+        .top-nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            padding: 1rem 1.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 100;
+            background: linear-gradient(180deg, rgba(0,0,0,0.5) 0%, transparent 100%);
+        }
+
+        .language-selector {
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .start-chat-btn {
+            background: #10b981;
+            color: white;
+            border: none;
+            padding: 0.7rem 1.5rem;
+            border-radius: 25px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.3s;
+        }
+
+        .start-chat-btn:hover {
+            background: #059669;
+            transform: translateY(-2px);
+        }
+
+        /* 底部控制栏 */
+        .bottom-controls {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 1.5rem;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 1rem;
+            z-index: 100;
+            background: linear-gradient(0deg, rgba(0,0,0,0.5) 0%, transparent 100%);
+        }
+
+        .control-btn {
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            border: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 1.3rem;
+        }
+
+        .control-btn:hover {
+            transform: scale(1.1);
+        }
+
+        .btn-subtitle {
+            background: rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(10px);
+            color: white;
+        }
+
+        .btn-subtitle.active {
+            background: white;
+            color: #1a1a1a;
+        }
+
+        .btn-mic {
+            background: rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(10px);
+            color: white;
+        }
+
+        .btn-chat {
+            background: rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(10px);
+            color: white;
+        }
+
+        .btn-chat.active {
+            background: white;
+            color: #1a1a1a;
+        }
+
+        .btn-end-call {
+            background: #ef4444;
+            color: white;
+            width: 64px;
+            height: 64px;
+            font-size: 1.5rem;
+        }
+
+        .btn-end-call:hover {
+            background: #dc2626;
+        }
+
+        /* 浮动聊天窗口 */
+        .chat-window {
+            position: fixed;
+            right: 2rem;
+            bottom: 8rem;
+            width: 380px;
+            max-height: 600px;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            display: flex;
+            flex-direction: column;
+            z-index: 200;
+            transform: translateY(100vh);
+            transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .chat-window.show {
+            transform: translateY(0);
+        }
+
+        /* 聊天窗口头部 */
+        .chat-header {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid #f0f0f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chat-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #1a1a1a;
+        }
+
+        .chat-close {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: #f5f5f5;
+            border: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: #666;
+        }
+
+        .chat-close:hover {
+            background: #e5e5e5;
+        }
+
+        /* 聊天消息区 */
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            max-height: 400px;
+        }
+
+        .chat-messages::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .chat-messages::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .chat-messages::-webkit-scrollbar-thumb {
+            background: #e0e0e0;
+            border-radius: 3px;
+        }
+
+        /* 消息气泡 */
+        .message {
+            display: flex;
+            flex-direction: column;
+            max-width: 80%;
+            animation: messageSlide 0.3s ease-out;
+        }
+
+        @keyframes messageSlide {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .message.user {
+            align-self: flex-end;
+        }
+
+        .message.assistant {
+            align-self: flex-start;
+        }
+
+        .message-label {
+            font-size: 0.75rem;
+            color: #999;
+            margin-bottom: 0.3rem;
+            padding: 0 0.5rem;
+        }
+
+        .message-bubble {
+            padding: 0.8rem 1.2rem;
+            border-radius: 18px;
+            line-height: 1.5;
+            font-size: 0.95rem;
+        }
+
+        .message.user .message-bubble {
+            background: #1a1a1a;
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.assistant .message-bubble {
+            background: #f5f5f5;
+            color: #1a1a1a;
+            border-bottom-left-radius: 4px;
+        }
+
+        .message-hint {
+            font-size: 0.75rem;
+            color: #999;
+            margin-top: 0.3rem;
+            padding: 0 0.5rem;
+        }
+
+        /* 聊天输入区 */
+        .chat-input-area {
+            padding: 1rem 1.5rem;
+            border-top: 1px solid #f0f0f0;
+        }
+
+        .chat-input-wrapper {
+            display: flex;
+            gap: 0.8rem;
+            align-items: flex-end;
+        }
+
+        .chat-input {
+            flex: 1;
+            background: #f5f5f5;
+            border: none;
+            padding: 0.8rem 1rem;
+            border-radius: 20px;
+            font-size: 0.95rem;
+            resize: none;
+            max-height: 100px;
+            font-family: inherit;
+        }
+
+        .chat-input:focus {
+            outline: none;
+            background: #ebebeb;
+        }
+
+        .chat-input::placeholder {
+            color: #999;
+        }
+
+        .send-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: #1a1a1a;
+            color: white;
+            border: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .send-btn:hover {
+            background: #333;
+            transform: scale(1.1);
+        }
+
+        .send-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        /* 字幕显示 */
+        .subtitle-overlay {
+            position: fixed;
+            bottom: 5rem;
+            left: 50%;
+            transform: translateX(-50%);
+            background: transparent;
+            color: white;
+            padding: 1rem 2rem;
+            border-radius: 10px;
+            font-size: 1.1rem;
+            max-width: 50%;
+            text-align: center;
+            z-index: 50;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .subtitle-overlay.show {
+            opacity: 1;
+        }
+
+        /* 隐藏按钮 */
+        .control-btn.hidden {
+            display: none;
+        }
+
+        /* 移动端优化 */
+        @media (max-width: 768px) {
+            body {
+                /* 防止下拉刷新 */
+                overscroll-behavior-y: contain;
+                /* 防止文字选中 */
+                user-select: none;
+                -webkit-user-select: none;
+                /* 优化触摸 */
+                touch-action: manipulation;
+                -webkit-tap-highlight-color: transparent;
+            }
+            
+            .top-nav {
+                padding: 0.8rem 1rem;
+            }
+            
+            .language-selector {
+                padding: 0.4rem 0.8rem;
+                font-size: 0.85rem;
+            }
+            
+            .chat-window {
+                right: 1rem;
+                left: 1rem;
+                width: auto;
+                bottom: 7rem;
+                max-height: 60vh;
+            }
+            
+            .chat-messages {
+                max-height: calc(60vh - 150px);
+            }
+
+            .bottom-controls {
+                padding: 1rem;
+                gap: 0.5rem;
+            }
+
+            .control-btn {
+                width: 48px;
+                height: 48px;
+                font-size: 1.1rem;
+            }
+
+            .btn-end-call {
+                width: 56px;
+                height: 56px;
+            }
+            
+            .subtitle-overlay {
+                bottom: 8rem;
+                font-size: 0.9rem;
+                padding: 0.6rem 1rem;
+                max-width: 90%;
+            }
+        }
+        
+        /* 小屏手机优化 */
+        @media (max-width: 375px) {
+            .control-btn {
+                width: 44px;
+                height: 44px;
+                font-size: 1rem;
+            }
+            
+            .btn-end-call {
+                width: 52px;
+                height: 52px;
+            }
+            
+            .bottom-controls {
+                gap: 0.4rem;
+            }
+        }
+        
+        /* 横屏模式优化 */
+        @media (max-width: 768px) and (orientation: landscape) {
+            .top-nav {
+                padding: 0.5rem 1rem;
+            }
+            
+            .bottom-controls {
+                padding: 0.5rem;
+            }
+            
+            .chat-window {
+                max-height: 70vh;
+                bottom: 5rem;
+            }
+            
+            .subtitle-overlay {
+                bottom: 5.5rem;
+                font-size: 0.85rem;
+            }
+        }
+
+        /* 录音动画 */
+        .btn-mic.recording {
+            background: #ef4444;
+            animation: recordPulse 1.5s infinite;
+        }
+
+        @keyframes recordPulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            50% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+        }
+    </style>
+</head>
+<body>
+    <!-- 全屏视频 -->
+    <div class="video-container">
+        <video id="remoteVideo" autoplay playsinline muted></video>
+        <audio id="remoteAudio" autoplay playsinline style="display: none;"></audio>
+        
+        <!-- 加载遮罩 -->
+        <div class="loading-overlay" id="loadingOverlay">
+            <div class="loading-background" id="loadingBackground"></div>
+            <div class="loading-content">
+                <div class="loading-icon" id="loadingIcon">
+                    <i class="bi bi-telephone-fill"></i>
+                </div>
+                <div class="loading-text" id="loadingText">Connecting...</div>
+                <div class="loading-progress" id="loadingProgress">正在准备数字人...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 顶部导航 -->
+    <div class="top-nav">
+        <div class="language-selector">
+            <i class="bi bi-globe"></i>
+            <span>Chinese</span>
+            <i class="bi bi-chevron-down" style="font-size: 0.7rem;"></i>
+        </div>
+        <button class="start-chat-btn" id="startChatBtn" style="display: none;">
+            <i class="bi bi-play-fill"></i>
+            Start video chat
+        </button>
+    </div>
+
+    <!-- 底部控制栏 -->
+    <div class="bottom-controls" id="bottomControls">
+        <!-- Calling状态：只显示End Call -->
+        <button class="control-btn btn-subtitle active hidden" id="subtitleBtn" title="字幕">
+            <i class="bi bi-badge-cc-fill"></i>
+        </button>
+        <button class="control-btn btn-mic hidden" id="micBtn" title="麦克风">
+            <i class="bi bi-mic"></i>
+        </button>
+        <button class="control-btn btn-chat hidden" id="chatToggleBtn" title="Chat">
+            <i class="bi bi-chat-dots"></i>
+        </button>
+        <button class="control-btn btn-end-call" id="endCallBtn" title="结束通话">
+            <i class="bi bi-telephone-x-fill"></i>
+        </button>
+    </div>
+
+    <!-- 字幕显示 -->
+    <div class="subtitle-overlay" id="subtitleOverlay">
+        你好，有什么我可以帮助你的吗？
+    </div>
+
+    <!-- 浮动聊天窗口 -->
+    <div class="chat-window" id="chatWindow">
+        <div class="chat-header">
+            <div class="chat-title">Chat</div>
+            <button class="chat-close" id="chatCloseBtn">
+                <i class="bi bi-x"></i>
+            </button>
+        </div>
+
+        <div class="chat-messages" id="chatMessages">
+            <!-- 聊天消息将在对话过程中动态添加 -->
+        </div>
+
+        <div class="chat-input-area">
+            <div class="chat-input-wrapper">
+                <textarea 
+                    id="chatInput" 
+                    class="chat-input" 
+                    placeholder="在此输入文字"
+                    rows="1"
+                    onkeypress="handleChatKeyPress(event)"
+                ></textarea>
+                <button class="send-btn" id="sendBtn" onclick="sendChatMessage()">
+                    <i class="bi bi-send-fill"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="client_talk.js"></script>
+    <script>
+        // 聊天窗口控制
+        const chatWindow = document.getElementById('chatWindow');
+        const chatToggleBtn = document.getElementById('chatToggleBtn');
+        const chatCloseBtn = document.getElementById('chatCloseBtn');
+        const chatInput = document.getElementById('chatInput');
+
+        function toggleChat() {
+            chatWindow.classList.toggle('show');
+            chatToggleBtn.classList.toggle('active');
+            if (chatWindow.classList.contains('show')) {
+                setTimeout(() => chatInput.focus(), 400);
+            }
+        }
+
+        chatToggleBtn.addEventListener('click', toggleChat);
+        chatCloseBtn.addEventListener('click', toggleChat);
+
+        // 输入框自动调整高度
+        chatInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 100) + 'px';
+        });
+
+        // 键盘快捷键
+        function handleChatKeyPress(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendChatMessage();
+            }
+        }
+
+        function sendChatMessage() {
+            const text = chatInput.value.trim();
+            if (text && window.avatarClient) {
+                window.avatarClient.sendTextMessage(text);
+                chatInput.value = '';
+                chatInput.style.height = 'auto';
+            }
+        }
+
+        // 结束通话 - 无需确认
+        document.getElementById('endCallBtn').addEventListener('click', () => {
+            if (window.avatarClient) {
+                window.avatarClient.disconnect();
+            }
+            window.location.href = 'index.html';
+        });
+
+        // 字幕按钮控制
+        document.getElementById('subtitleBtn').addEventListener('click', function() {
+            if (window.avatarClient) {
+                window.avatarClient.toggleSubtitle();
+                this.classList.toggle('active');
+                
+                // 切换图标
+                const icon = this.querySelector('i');
+                if (this.classList.contains('active')) {
+                    icon.className = 'bi bi-badge-cc-fill';
+                } else {
+                    icon.className = 'bi bi-badge-cc';
+                }
+            }
+        });
+
+        // 麦克风控制
+        document.getElementById('micBtn').addEventListener('click', function() {
+            if (window.avatarClient) {
+                window.avatarClient.toggleVoiceInput();
+            }
+        });
+    </script>
+</body>
+</html>

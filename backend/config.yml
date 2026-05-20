@@ -1,0 +1,68 @@
+LLM:
+  LLM_API_KEY: "xxx"
+  LLM_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  LLM_MODEL_NAME: "qwen-plus" # 可选: qwen-plus, qwen-max, qwen-turbo, gpt-4, gpt-3.5-turbo 等
+
+TTS:
+  DOUBAO_APPID: "api-key-20260414103911"
+  DOUBAO_TOKEN: "f305e775-c70f-4c67-a8e5-ffbfbc778797"
+
+DOWNLOAD:
+  BASE_URL: "https://huggingface.co/shibing624/ai-avatar-wav2lip/resolve/main"
+
+  MODELS:
+    wav2lip.pth:
+      path: "./models/wav2lip.pth"
+      size: "215 MB"
+      description: "Wav2Lip256 唇形同步生成模型"
+
+  AVATARS:
+    wav2lip_avatar_female_model:
+      url_suffix: "wav2lip_avatar_female_model.zip"
+      path: "./data/wav2lip_avatar_female_model.zip"
+      size: "353 MB"
+      description: "女性数字人形象(含预处理人脸图片)"
+
+    wav2lip_avatar_glass_man:
+      url_suffix: "wav2lip_avatar_glass_man.zip"
+      path: "./data/wav2lip_avatar_glass_man.zip"
+      size: "88.4 MB"
+      description: "戴眼镜男性数字人形象"
+
+    wav2lip_avatar_long_hair_girl:
+      url_suffix: "wav2lip_avatar_long_hair_girl.zip"
+      path: "./data/wav2lip_avatar_long_hair_girl.zip"
+      size: "153 MB"
+      description: "长发女性数字人形象"
+
+# 数字人配置
+AVATARS:
+  default_avatar: "ai_model"
+
+  avatars:
+    - id: "ai_model"
+      name: "AI 模特"
+      description: "专业的AI模特，展示时尚、优雅与自信"
+      avatar_dir: "wav2lip_avatar_female_model"
+      image: "/data/wav2lip_avatar_female_model/full_imgs/00000000.png"
+      tts_config:
+        type: "doubao"
+        voice: "zh_female_sajiaonvyou_moon_bigtts"
+
+    - id: "ai_girlfriend"
+      name: "AI 女友"
+      description: "温柔体贴的AI女友，倾听、关心、陪伴你的每一天"
+      avatar_dir: "wav2lip_avatar_long_hair_girl"
+      image: "/data/wav2lip_avatar_long_hair_girl/full_imgs/00000000.png"
+      tts_config:
+        type: "doubao"
+        voice: "zh_female_tianmeixiaoyuan_moon_bigtts"
+
+    - id: "ai_assistant"
+      name: "AI 助手"
+      description: "高效专业的AI助手，帮助你解决工作和学习中的各种问题"
+      avatar_dir: "wav2lip_avatar_glass_man"
+      image: "/data/wav2lip_avatar_glass_man/full_imgs/00000000.png"
+      tts_config:
+        type: "doubao"
+        voice: "ICL_zh_male_hanhoudunshi_tob"

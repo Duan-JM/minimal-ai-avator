@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  aiavatar:
+    build: .
+    image: aiavatar:latest
+    container_name: aiavatar
+    restart: unless-stopped
+    ports:
+      - "8010:8010"
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+      - ./backend/config.yml:/app/backend/config.yml:ro
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # Override default CMD args here if needed:
+    # command: ["--avatar_id", "wav2lip_avatar_glass_man", "--port", "8010"]

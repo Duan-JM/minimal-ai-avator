@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI数字人对话系统</title>
+    
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 
+                         'Microsoft YaHei', sans-serif;
+            background: #fafafa;
+            color: #1a1a1a;
+            min-height: 100vh;
+        }
+
+        /* 主要内容区 */
+        .main-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 4rem 2rem;
+        }
+
+        /* 标题区 */
+        .hero-section {
+            text-align: center;
+            margin-bottom: 4rem;
+        }
+
+        .hero-title {
+            font-size: 3.5rem;
+            font-weight: 800;
+            line-height: 1.2;
+            margin-bottom: 1.5rem;
+            color: #1a1a1a;
+        }
+
+        .hero-subtitle {
+            font-size: 1.2rem;
+            color: #666;
+            max-width: 700px;
+            margin: 0 auto;
+        }
+
+        /* 数字人卡片网格 */
+        .avatars-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 2rem;
+            margin-top: 3rem;
+        }
+
+        /* 数字人卡片 */
+        .avatar-card {
+            background: white;
+            border-radius: 24px;
+            overflow: hidden;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            cursor: pointer;
+            border: 1px solid #f0f0f0;
+        }
+
+        .avatar-card:hover {
+            transform: translateY(-8px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+        }
+
+        .avatar-card-header {
+            padding: 1.5rem 1.5rem 1rem;
+            background: #f8f8ff;
+        }
+
+        .avatar-card-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            color: #1a1a1a;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .avatar-card-arrow {
+            width: 32px;
+            height: 32px;
+            background: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s;
+        }
+
+        .avatar-card:hover .avatar-card-arrow {
+            background: #7c3aed;
+            color: white;
+            transform: translateX(4px);
+        }
+
+        .avatar-card-description {
+            font-size: 0.95rem;
+            color: #666;
+            line-height: 1.6;
+            margin-bottom: 1rem;
+            /* 固定2行高度 */
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            min-height: 3.2rem; /* 1.6 * 2 行 */
+        }
+
+        .avatar-image-wrapper {
+            width: 100%;
+            aspect-ratio: 9/16; /* 竖向比例，适配数字人形象 */
+            overflow: hidden;
+            position: relative;
+        }
+
+        .avatar-image {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transition: transform 0.5s;
+            background: #f0f0f0; /* 加载时的背景色 */
+        }
+        
+        .avatar-image.loading {
+            opacity: 0.3;
+        }
+        
+        .avatar-image.loaded {
+            opacity: 1;
+        }
+
+        .avatar-card:hover .avatar-image {
+            transform: scale(1.05);
+        }
+
+        /* 响应式设计 */
+        @media (max-width: 768px) {
+            .navbar {
+                padding: 1rem;
+            }
+
+            .navbar-menu {
+                display: none;
+            }
+
+            .hero-title {
+                font-size: 2rem;
+            }
+
+            .hero-subtitle {
+                font-size: 1rem;
+            }
+
+            .avatars-grid {
+                grid-template-columns: 1fr;
+                gap: 1.5rem;
+            }
+
+            .main-content {
+                padding: 2rem 1rem;
+            }
+        }
+
+        /* 加载动画 */
+        .loading {
+            text-align: center;
+            padding: 3rem;
+            color: #666;
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border: 4px solid #f0f0f0;
+            border-top-color: #7c3aed;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+    </style>
+</head>
+<body>
+    <!-- 主要内容 -->
+    <main class="main-content">
+        <!-- 标题区 -->
+        <section class="hero-section">
+            <h1 class="hero-title">Interactive AI avatar for<br>every role in life</h1>
+            <p class="hero-subtitle">
+                One platform, countless roles — AI avatars that work, teach, guide, and care.
+            </p>
+        </section>
+
+        <!-- 数字人卡片网格 -->
+        <div id="avatarsGrid" class="avatars-grid">
+            <!-- 加载中 -->
+            <div class="loading" style="grid-column: 1/-1;">
+                <div class="loading-spinner"></div>
+                <p style="margin-top: 1rem;">Loading avatars...</p>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // 从后端加载数字人列表
+        let avatars = [];
+        
+        async function loadAvatars() {
+            try {
+                const response = await fetch('/api/avatars');
+                const result = await response.json();
+                
+                if (result.code === 0 && result.data) {
+                    avatars = result.data;
+                    renderAvatars();
+                } else {
+                    console.error('加载数字人列表失败:', result);
+                    showError('Failed to load avatars');
+                }
+            } catch (error) {
+                console.error('加载数字人列表出错:', error);
+                showError('Failed to connect to server');
+            }
+        }
+        
+        function renderAvatars() {
+            const grid = document.getElementById('avatarsGrid');
+            grid.innerHTML = '';
+            
+            avatars.forEach(avatar => {
+                const card = document.createElement('div');
+                card.className = 'avatar-card';
+                card.onclick = () => openAvatarChat(avatar.id, avatar.name);
+                
+                // 使用实际图片，如果不存在则使用占位图
+                const imageSrc = avatar.image || `https://picsum.photos/seed/${avatar.id}/600/400`;
+                
+                card.innerHTML = `
+                    <div class="avatar-card-header">
+                        <div class="avatar-card-title">
+                            ${avatar.role || avatar.name}
+                            <span class="avatar-card-arrow">
+                                <i class="bi bi-arrow-right"></i>
+                            </span>
+                        </div>
+                        <div class="avatar-card-description">
+                            ${avatar.subtitle || avatar.description}
+                        </div>
+                    </div>
+                    <div class="avatar-image-wrapper">
+                        <img src="${imageSrc}" 
+                             alt="${avatar.name}" 
+                             class="avatar-image loading"
+                             loading="eager"
+                             onerror="this.onerror=null; this.src='https://picsum.photos/seed/${avatar.id}/600/400';">
+                    </div>
+                `;
+                
+                grid.appendChild(card);
+                
+                // 图片加载完成后移除loading类
+                const img = card.querySelector('.avatar-image');
+                if (img) {
+                    // 如果图片已经加载（来自缓存）
+                    if (img.complete) {
+                        img.classList.remove('loading');
+                        img.classList.add('loaded');
+                    } else {
+                        // 监听图片加载完成事件
+                        img.addEventListener('load', function() {
+                            this.classList.remove('loading');
+                            this.classList.add('loaded');
+                        });
+                    }
+                }
+            });
+        }
+        
+        function showError(message) {
+            const grid = document.getElementById('avatarsGrid');
+            grid.innerHTML = `
+                <div class="loading" style="grid-column: 1/-1;">
+                    <i class="bi bi-exclamation-circle" style="font-size: 3rem; color: #dc3545;"></i>
+                    <p style="margin-top: 1rem; color: #dc3545;">${message}</p>
+                    <button onclick="loadAvatars()" class="btn-dashboard" style="margin-top: 1rem;">
+                        Retry
+                    </button>
+                </div>
+            `;
+        }
+        
+        function openAvatarChat(avatarId, avatarName) {
+            // 只传入avatar参数即可
+            const url = `talk.html?avatar=${avatarId}`;
+            console.log('跳转到对话页面:', url);
+            window.location.href = url;
+        }
+        
+        // 页面加载
+        document.addEventListener('DOMContentLoaded', () => {
+            loadAvatars();
+        });
+    </script>
+</body>
+</html>
