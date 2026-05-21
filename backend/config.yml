@@ -7,6 +7,16 @@ TTS:
   DOUBAO_APPID: "your-doubao-appid"
   DOUBAO_TOKEN: "your-doubao-token"
 
+  # 当 --tts vllm_omni 时使用：自部署的 vLLM-Omni TTS 服务（OpenAI 兼容 /v1/audio/speech）
+  # VLLM_OMNI_URL: "http://localhost:8091"         # 服务地址；CLI --TTS_SERVER 优先级更高
+  # VLLM_OMNI_API_KEY: ""                          # 可选，启用时会发送 Authorization: Bearer
+  # VLLM_OMNI_MODEL: ""                            # 可选，留空由服务端 --omni 启动模型决定
+  # VLLM_OMNI_VOICE: "vivian"                      # CLI --REF_FILE 或 avatar tts_config.voice 优先
+  # VLLM_OMNI_LANGUAGE: "Auto"                     # Auto/Chinese/English/Japanese/Korean/...
+  # VLLM_OMNI_TASK_TYPE: ""                        # CustomVoice / VoiceDesign / Base
+  # VLLM_OMNI_INSTRUCTIONS: ""                     # 风格/情绪指令
+  # VLLM_OMNI_SAMPLE_RATE: 24000                   # 服务端返回 PCM 的采样率，按模型选择
+
 DOWNLOAD:
   BASE_URL: "https://huggingface.co/shibing624/ai-avatar-wav2lip/resolve/main"
 

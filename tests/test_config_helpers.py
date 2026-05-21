@@ -100,6 +100,57 @@ class ConfigHelperTests(unittest.TestCase):
         # Default voice is hard-coded when missing.
         self.assertNotEqual(config_module.get_doubao_voice(), "")
 
+    def test_vllm_omni_helpers_return_defaults_when_unset(self):
+        self._write(
+            """
+            TTS: {}
+            """
+        )
+        self.assertEqual(config_module.get_vllm_omni_url(), "http://localhost:8091")
+        self.assertEqual(config_module.get_vllm_omni_api_key(), "")
+        self.assertEqual(config_module.get_vllm_omni_model(), "")
+        self.assertEqual(config_module.get_vllm_omni_voice(), "vivian")
+        self.assertEqual(config_module.get_vllm_omni_language(), "Auto")
+        self.assertEqual(config_module.get_vllm_omni_task_type(), "")
+        self.assertEqual(config_module.get_vllm_omni_instructions(), "")
+        self.assertEqual(config_module.get_vllm_omni_sample_rate(), 24000)
+
+    def test_vllm_omni_helpers_read_overrides(self):
+        self._write(
+            """
+            TTS:
+              VLLM_OMNI_URL: "http://example.com:9000/"
+              VLLM_OMNI_API_KEY: "secret"
+              VLLM_OMNI_MODEL: "fishaudio/s2-pro"
+              VLLM_OMNI_VOICE: "ryan"
+              VLLM_OMNI_LANGUAGE: "Chinese"
+              VLLM_OMNI_TASK_TYPE: "CustomVoice"
+              VLLM_OMNI_INSTRUCTIONS: "Speak warmly"
+              VLLM_OMNI_SAMPLE_RATE: 44100
+            """
+        )
+        self.assertEqual(
+            config_module.get_vllm_omni_url(), "http://example.com:9000/"
+        )
+        self.assertEqual(config_module.get_vllm_omni_api_key(), "secret")
+        self.assertEqual(config_module.get_vllm_omni_model(), "fishaudio/s2-pro")
+        self.assertEqual(config_module.get_vllm_omni_voice(), "ryan")
+        self.assertEqual(config_module.get_vllm_omni_language(), "Chinese")
+        self.assertEqual(config_module.get_vllm_omni_task_type(), "CustomVoice")
+        self.assertEqual(
+            config_module.get_vllm_omni_instructions(), "Speak warmly"
+        )
+        self.assertEqual(config_module.get_vllm_omni_sample_rate(), 44100)
+
+    def test_vllm_omni_sample_rate_falls_back_on_invalid_value(self):
+        self._write(
+            """
+            TTS:
+              VLLM_OMNI_SAMPLE_RATE: "not-a-number"
+            """
+        )
+        self.assertEqual(config_module.get_vllm_omni_sample_rate(), 24000)
+
 
 if __name__ == "__main__":
     unittest.main()

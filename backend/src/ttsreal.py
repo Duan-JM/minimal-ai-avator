@@ -38,7 +38,19 @@ if TYPE_CHECKING:
     from src.basereal import BaseReal
 
 from src.log import logger
-from src.config import get_doubao_appid, get_doubao_token, get_doubao_voice
+from src.config import (
+    get_doubao_appid,
+    get_doubao_token,
+    get_doubao_voice,
+    get_vllm_omni_api_key,
+    get_vllm_omni_instructions,
+    get_vllm_omni_language,
+    get_vllm_omni_model,
+    get_vllm_omni_sample_rate,
+    get_vllm_omni_task_type,
+    get_vllm_omni_url,
+    get_vllm_omni_voice,
+)
 
 
 class State(Enum):
@@ -763,3 +775,279 @@ class DoubaoTTS3(BaseTTS):
                 eventpoint.update(**textevent)
                 self.parent.put_audio_frame(padded_frame, eventpoint)
                 logger.debug(f"Send remaining audio on error")
+
+###########################################################################################
+class VllmOmniTTS(BaseTTS):
+    """vLLM-Omni 部署的 OpenAI 兼容 TTS 服务。
+
+    通过 ``POST {base_url}/v1/audio/speech`` 获取 PCM 流，转成 16 kHz float32
+    音频块送入 Wav2Lip 管道。
+    """
+
+    OPENAI_PATH = "/v1/audio/speech"
+    HTTP_CHUNK_BYTES = 6400  # iter_content 一次取多少字节
+
+    def __init__(self, opt, parent):
+        super().__init__(opt, parent)
+
+        # 服务地址优先取 CLI 的 --TTS_SERVER，其次取配置
+        cli_url = (getattr(opt, "TTS_SERVER", "") or "").strip()
+        base_url = cli_url or get_vllm_omni_url()
+        self.base_url = base_url.rstrip("/")
+        self.endpoint = self.base_url + self.OPENAI_PATH
+
+        self.api_key = get_vllm_omni_api_key()
+        self.model = get_vllm_omni_model()
+        self.language = get_vllm_omni_language()
+        self.task_type = get_vllm_omni_task_type()
+        self.instructions = get_vllm_omni_instructions()
+
+        # 音色：优先取 --REF_FILE / avatar tts_config.voice，其次取配置默认值
+        ref_file = (getattr(opt, "REF_FILE", "") or "").strip()
+        self.voice = ref_file or get_vllm_omni_voice()
+
+        # 服务端 PCM 采样率（默认 24000，与 Qwen3-TTS / Voxtral / CosyVoice3 一致）
+        self.source_sample_rate = int(get_vllm_omni_sample_rate())
+        self._resample_quantum = self._compute_resample_quantum(
+            self.source_sample_rate, self.sample_rate
+        )
+
+        logger.info(
+            "VllmOmniTTS endpoint=%s voice=%s model=%s language=%s "
+            "task_type=%s source_sr=%d",
+            self.endpoint,
+            self.voice,
+            self.model or "<server-default>",
+            self.language,
+            self.task_type or "<server-default>",
+            self.source_sample_rate,
+        )
+
+    @staticmethod
+    def _compute_resample_quantum(src_rate: int, dst_rate: int) -> int:
+        """源采样率对应的最小切片，使得 src 帧数能整除映射到 dst 帧数。
+
+        例如 24000 -> 16000 时 quantum=3（每 3 个源样本对应 2 个目标样本），
+        44100 -> 16000 时 quantum=441。
+        """
+        if src_rate == dst_rate:
+            return 1
+        from math import gcd
+
+        return src_rate // gcd(src_rate, dst_rate)
+
+    def _build_payload(self, text: str) -> dict:
+        payload = {
+            "input": text,
+            "voice": self.voice,
+            "response_format": "pcm",
+            "stream": True,
+        }
+        if self.model:
+            payload["model"] = self.model
+        if self.language:
+            payload["language"] = self.language
+        if self.task_type:
+            payload["task_type"] = self.task_type
+        if self.instructions:
+            payload["instructions"] = self.instructions
+        return payload
+
+    def _build_headers(self) -> dict:
+        headers = {"Content-Type": "application/json", "Accept": "application/octet-stream"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _looks_like_text_body(self, response, sniff: bytes) -> bool:
+        """判断 stream=True 返回的 200 响应是否是 JSON/文本错误体而非 PCM。"""
+        content_type = (response.headers.get("Content-Type") or "").lower()
+        if any(token in content_type for token in ("json", "text/", "xml")):
+            return True
+        sniff_head = sniff.lstrip()[:1]
+        if sniff_head in (b"{", b"["):
+            return True
+        return False
+
+    def txt_to_audio(self, msg: tuple[str, dict]):
+        text, _textevent = msg
+        if not text:
+            return
+        try:
+            self.stream_tts(self.vllm_omni_voice(text), msg)
+        except Exception:  # noqa: BLE001 - log full context but never crash worker
+            logger.exception("VllmOmniTTS txt_to_audio failed")
+
+    def vllm_omni_voice(self, text: str) -> Iterator[bytes]:
+        start = time.perf_counter()
+        payload = self._build_payload(text)
+        headers = self._build_headers()
+        try:
+            with requests.post(
+                self.endpoint,
+                headers=headers,
+                json=payload,
+                stream=True,
+                timeout=(10, 60),
+            ) as response:
+                try:
+                    response.raise_for_status()
+                except requests.HTTPError:
+                    body_snippet = b""
+                    try:
+                        body_snippet = response.content[:512]
+                    except Exception:  # noqa: BLE001
+                        pass
+                    logger.error(
+                        "VllmOmniTTS HTTP %s for text_len=%d: %s",
+                        response.status_code,
+                        len(text),
+                        body_snippet.decode("utf-8", errors="ignore"),
+                    )
+                    return
+
+                first = True
+                sniff_buffer = b""
+                checked_body_type = False
+                for chunk in response.iter_content(chunk_size=self.HTTP_CHUNK_BYTES):
+                    if self.state != State.RUNNING:
+                        break
+                    if not chunk:
+                        continue
+                    if not checked_body_type:
+                        sniff_buffer += chunk
+                        if len(sniff_buffer) >= 8 or len(sniff_buffer) >= len(chunk):
+                            if self._looks_like_text_body(response, sniff_buffer):
+                                logger.error(
+                                    "VllmOmniTTS expected PCM but got %s body: %s",
+                                    response.headers.get("Content-Type"),
+                                    sniff_buffer[:512].decode("utf-8", errors="ignore"),
+                                )
+                                return
+                            checked_body_type = True
+                            chunk = sniff_buffer
+                            sniff_buffer = b""
+                        else:
+                            continue
+                    if first:
+                        logger.debug(
+                            "VllmOmniTTS time to first chunk: %.3fs",
+                            time.perf_counter() - start,
+                        )
+                        first = False
+                    yield chunk
+                # 处理尾部未触发类型判断的情况（极短响应体）
+                if not checked_body_type and sniff_buffer:
+                    if self._looks_like_text_body(response, sniff_buffer):
+                        logger.error(
+                            "VllmOmniTTS expected PCM but got %s body: %s",
+                            response.headers.get("Content-Type"),
+                            sniff_buffer[:512].decode("utf-8", errors="ignore"),
+                        )
+                        return
+                    if self.state == State.RUNNING:
+                        yield sniff_buffer
+        except requests.RequestException:
+            logger.exception("VllmOmniTTS request failed")
+
+    def stream_tts(self, audio_stream: Iterator[bytes], msg: tuple[str, dict]):
+        text, textevent = msg
+        first = True
+        byte_buffer = b""
+        src_buffer = np.zeros(0, dtype=np.float32)
+        dst_buffer = np.zeros(0, dtype=np.float32)
+        interrupted = False
+
+        for chunk in audio_stream:
+            if self.state != State.RUNNING:
+                interrupted = True
+                break
+            if not chunk:
+                continue
+
+            byte_buffer += chunk
+            # 仅消费整数对齐的 int16 字节
+            usable_len = (len(byte_buffer) // 2) * 2
+            if usable_len == 0:
+                continue
+            usable_bytes = byte_buffer[:usable_len]
+            byte_buffer = byte_buffer[usable_len:]
+
+            int_samples = np.frombuffer(usable_bytes, dtype=np.int16)
+            float_samples = int_samples.astype(np.float32) / 32767.0
+
+            if self.source_sample_rate == self.sample_rate:
+                # 直接累入目标缓冲
+                dst_buffer = np.concatenate((dst_buffer, float_samples))
+            else:
+                src_buffer = np.concatenate((src_buffer, float_samples))
+                # 仅在源样本数足够 quantum 时进行重采样，避免边界抖动
+                quantum = self._resample_quantum
+                aligned = (src_buffer.shape[0] // quantum) * quantum
+                if aligned > 0:
+                    to_resample = src_buffer[:aligned]
+                    src_buffer = src_buffer[aligned:]
+                    resampled = resampy.resample(
+                        x=to_resample,
+                        sr_orig=self.source_sample_rate,
+                        sr_new=self.sample_rate,
+                    )
+                    dst_buffer = np.concatenate((dst_buffer, resampled))
+
+            # 切成 20 ms 帧推送
+            streamlen = dst_buffer.shape[0]
+            idx = 0
+            while streamlen >= self.chunk:
+                if self.state != State.RUNNING:
+                    interrupted = True
+                    break
+                eventpoint = {}
+                if first:
+                    eventpoint = {"status": "start", "text": text}
+                    eventpoint.update(**textevent)
+                    first = False
+                current_frame = dst_buffer[idx : idx + self.chunk]
+                self.parent.put_audio_frame(current_frame, eventpoint)
+                streamlen -= self.chunk
+                idx += self.chunk
+            dst_buffer = dst_buffer[idx:]
+            if interrupted:
+                break
+
+        if interrupted:
+            # 被打断时不再发送 end 事件（与 TencentTTS 行为一致），等待下次播报
+            return
+
+        # 处理流结束后仍残留的源样本
+        if self.source_sample_rate != self.sample_rate and src_buffer.shape[0] > 0:
+            resampled_tail = resampy.resample(
+                x=src_buffer,
+                sr_orig=self.source_sample_rate,
+                sr_new=self.sample_rate,
+            )
+            dst_buffer = np.concatenate((dst_buffer, resampled_tail))
+            src_buffer = np.zeros(0, dtype=np.float32)
+
+        # 完整帧
+        streamlen = dst_buffer.shape[0]
+        idx = 0
+        while streamlen >= self.chunk:
+            eventpoint = {}
+            if first:
+                eventpoint = {"status": "start", "text": text}
+                eventpoint.update(**textevent)
+                first = False
+            current_frame = dst_buffer[idx : idx + self.chunk]
+            self.parent.put_audio_frame(current_frame, eventpoint)
+            streamlen -= self.chunk
+            idx += self.chunk
+        last_stream = dst_buffer[idx:]
+
+        eventpoint = {"status": "end", "text": text}
+        eventpoint.update(**textevent)
+        if last_stream.shape[0] > 0:
+            padded_frame = np.zeros(self.chunk, dtype=np.float32)
+            padded_frame[: last_stream.shape[0]] = last_stream
+            self.parent.put_audio_frame(padded_frame, eventpoint)
+        else:
+            self.parent.put_audio_frame(np.zeros(self.chunk, dtype=np.float32), eventpoint)

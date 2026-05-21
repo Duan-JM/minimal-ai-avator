@@ -9,7 +9,7 @@ Minimal AI Avator is a real-time interactive digital human service powered by Wa
 - Wav2Lip-based lip-sync avatar rendering
 - WebRTC audio/video streaming from the backend to browser clients
 - LLM streaming responses with reasoning-content filtering before speech playback
-- TTS integrations for Doubao, Doubao 3.0, Azure TTS, and Tencent TTS
+- TTS integrations for Doubao, Doubao 3.0, Azure TTS, Tencent TTS, and self-hosted vLLM-Omni
 - Optional idle/custom avatar video actions
 - First-run download of model and avatar assets
 - Local GPU inference, or split deployment with a remote GPU inference service

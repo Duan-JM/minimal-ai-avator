@@ -8,7 +8,7 @@ Minimal AI Avator 是一个实时交互式数字人项目：前端通过 WebRTC 
 
 - Wav2Lip 唇形同步数字人
 - WebRTC 实时音视频输出
-- 豆包 TTS / 豆包 3.0 TTS / Azure TTS / 腾讯 TTS 接入
+- 豆包 TTS / 豆包 3.0 TTS / Azure TTS / 腾讯 TTS / vLLM-Omni TTS 接入
 - LLM 流式回复，并过滤推理内容后再播报
 - 支持播放自定义待机视频动作
 - 支持模型与数字人素材首次运行自动下载
@@ -120,7 +120,7 @@ uv run python backend/main.py \
   --REF_FILE zh_female_roumeinvyou_emo_v2_mars_bigtts
 ```
 
-可选值见代码中的 `--tts` 参数说明：`tencent`、`doubao`、`doubao3`、`azuretts`。
+可选值见代码中的 `--tts` 参数说明：`tencent`、`doubao`、`doubao3`、`azuretts`、`vllm_omni`。
 
 Azure TTS 和本地音频播放依赖默认不安装，需要时可额外同步：
 
@@ -128,6 +128,33 @@ Azure TTS 和本地音频播放依赖默认不安装，需要时可额外同步�
 uv sync --extra azure
 uv sync --extra local-audio
 ```
+
+#### vLLM-Omni TTS
+
+自部署 [vLLM-Omni](https://github.com/vllm-project/vllm-omni) 的 OpenAI 兼容
+`POST /v1/audio/speech` 接口可作为 TTS 后端。先在 GPU 机器上启动服务：
+
+```bash
+vllm serve Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+  --deploy-config vllm_omni/deploy/qwen3_tts.yaml \
+  --omni --port 8091 --trust-remote-code --enforce-eager
+```
+
+然后在 `backend/main.py` 启动时指定：
+
+```bash
+uv run python backend/main.py \
+  --avatar_id wav2lip_avatar_female_model \
+  --tts vllm_omni \
+  --TTS_SERVER http://GPU_SERVER:8091 \
+  --REF_FILE vivian
+```
+
+或在 `backend/config.yml` 的 `TTS:` 段中配置默认服务地址、API Key、模型、音色、
+语言、任务类型与采样率（参见 `config.yml` 中的 `VLLM_OMNI_*` 示例键）。
+命令行 `--TTS_SERVER` 与 `--REF_FILE` 优先级高于配置文件。
+不同 vLLM-Omni 模型返回的 PCM 采样率不同（Qwen3-TTS / Voxtral / CosyVoice3 为
+24 kHz，Fish Speech S2 Pro 为 44.1 kHz），需通过 `VLLM_OMNI_SAMPLE_RATE` 设置。
 
 ### 本地 GPU 推理
 
