@@ -101,6 +101,51 @@ def get_doubao_voice() -> str:
     """获取豆包 TTS Voice"""
     return get_tts_config().get('DOUBAO_VOICE', 'zh_female_meilinvyou_saturn_bigtts')
 
+
+def get_vllm_omni_url() -> str:
+    """获取 vLLM-Omni TTS 服务地址（OpenAI 兼容端点的 base URL，不含 /v1）"""
+    return get_tts_config().get('VLLM_OMNI_URL', 'http://localhost:8091')
+
+
+def get_vllm_omni_api_key() -> str:
+    """获取 vLLM-Omni TTS API Key（可选，发送 Authorization: Bearer ...）"""
+    return get_tts_config().get('VLLM_OMNI_API_KEY', '')
+
+
+def get_vllm_omni_model() -> str:
+    """获取 vLLM-Omni 模型标识；为空时由服务端根据启动配置决定"""
+    return get_tts_config().get('VLLM_OMNI_MODEL', '')
+
+
+def get_vllm_omni_voice() -> str:
+    """获取 vLLM-Omni 默认音色"""
+    return get_tts_config().get('VLLM_OMNI_VOICE', 'vivian')
+
+
+def get_vllm_omni_language() -> str:
+    """获取 vLLM-Omni 语言（Auto/Chinese/English/...）"""
+    return get_tts_config().get('VLLM_OMNI_LANGUAGE', 'Auto')
+
+
+def get_vllm_omni_task_type() -> str:
+    """获取 vLLM-Omni 任务类型（CustomVoice/VoiceDesign/Base）；为空表示由服务端默认值决定"""
+    return get_tts_config().get('VLLM_OMNI_TASK_TYPE', '')
+
+
+def get_vllm_omni_instructions() -> str:
+    """获取 vLLM-Omni 风格指令文本（可选）"""
+    return get_tts_config().get('VLLM_OMNI_INSTRUCTIONS', '')
+
+
+def get_vllm_omni_sample_rate() -> int:
+    """获取 vLLM-Omni 服务返回的 PCM 采样率，默认 24000 Hz（Qwen3-TTS / Voxtral / CosyVoice3）"""
+    raw = get_tts_config().get('VLLM_OMNI_SAMPLE_RATE', 24000)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 24000
+
+
 def get_download_config() -> dict:
     """
     获取下载配置
