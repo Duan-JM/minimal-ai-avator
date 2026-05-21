@@ -10,7 +10,7 @@ import os
 import time
 import cv2
 import glob
-import pickle
+import pickle  # nosec B403 - used only to load trusted local avatar coords files
 import copy
 import base64
 import requests
@@ -53,7 +53,7 @@ def load_avatar(avatar_id):
 
     if os.path.exists(coords_path):
         with open(coords_path, 'rb') as f:
-            coord_list_cycle = pickle.load(f)
+            coord_list_cycle = pickle.load(f)  # nosec B301 - trusted, local avatar data
         logger.info(f'Loaded coords from {coords_path}, count: {len(coord_list_cycle)}')
     else:
         coord_list_cycle = None

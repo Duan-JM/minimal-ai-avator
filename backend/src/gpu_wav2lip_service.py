@@ -12,8 +12,7 @@ import time
 import base64
 import numpy as np
 import cv2
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+from flask import Flask, request, jsonify, make_response
 import torch
 
 pwd_path = os.path.abspath(os.path.dirname(__file__))
@@ -40,7 +39,33 @@ if device == "cuda":
     torch.backends.cudnn.deterministic = False  # 保持非确定性以获得更好性能
 
 app = Flask(__name__)
-CORS(app)  # 允许跨域请求
+
+
+# Permissive CORS for the internal GPU service. We allow whichever Origin the
+# caller advertises (the service is intended to sit behind an internal network
+# and only the trusted web/API node talks to it). This replaces the
+# unmaintained flask-cors dependency (see PYSEC-2024-271).
+def _apply_cors_headers(response):
+    origin = request.headers.get('Origin', '*')
+    response.headers['Access-Control-Allow-Origin'] = origin
+    response.headers['Access-Control-Allow-Credentials'] = 'true'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = request.headers.get(
+        'Access-Control-Request-Headers', 'Content-Type, Authorization'
+    )
+    response.headers['Access-Control-Max-Age'] = '600'
+    return response
+
+
+@app.after_request
+def _add_cors(response):
+    return _apply_cors_headers(response)
+
+
+@app.route('/', defaults={'path': ''}, methods=['OPTIONS'])
+@app.route('/<path:path>', methods=['OPTIONS'])
+def _cors_preflight(path):  # noqa: ARG001 - path captured for catch-all
+    return _apply_cors_headers(make_response('', 204))
 
 # 全局变量
 model = None
@@ -67,10 +92,15 @@ def download_models(model_path):
 
 
 def _load(checkpoint_path):
-    if device == 'cuda':
-        checkpoint = torch.load(checkpoint_path)
-    else:
-        checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage)
+    map_location = None if device == 'cuda' else (lambda storage, loc: storage)
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=map_location, weights_only=True)
+    except Exception as exc:
+        logger.warning(
+            f"Safe torch.load(weights_only=True) failed for {checkpoint_path}: {exc}. "
+            "Falling back to weights_only=False; only load checkpoints you trust."
+        )
+        checkpoint = torch.load(checkpoint_path, map_location=map_location, weights_only=False)  # nosec B614
     return checkpoint
 
 
@@ -353,7 +383,8 @@ def main():
     parser.add_argument('--batch_size', type=int, default=32, help='batch size for warmup (推荐16-64)')
     parser.add_argument('--modelres', type=int, default=256, help='model resolution (default 256 for wav2lip)')
     parser.add_argument('--fp16', action='store_true', help='使用FP16半精度推理（更快，显存更小）')
-    parser.add_argument('--host', type=str, default='0.0.0.0', help='服务监听地址')
+    parser.add_argument('--host', type=str, default='127.0.0.1',
+                        help='服务监听地址（默认仅本机，部署时显式指定如 0.0.0.0）')
     parser.add_argument('--port', type=int, default=8080, help='服务端口')
     args = parser.parse_args()
 

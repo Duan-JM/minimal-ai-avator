@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            pyproject.toml
+
+      - name: Set up Python
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Sync dependencies (frozen lock)
+        run: uv sync --frozen
+
+      - name: Run unit tests
+        run: uv run --no-sync pytest -ra
+
+  security:
+    name: Security scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.10
+
+      - name: Run Bandit (fail on medium+ issues)
+        run: |
+          uvx bandit -r backend/src -c pyproject.toml --severity-level medium --confidence-level medium
+
+      - name: Audit locked dependencies
+        # We do not fail the build on advisories that have no upstream fix
+        # available yet (e.g. transitive joblib via librosa).
+        continue-on-error: true
+        run: |
+          tmp=$(mktemp --suffix=.txt)
+          uv export --frozen --no-dev --no-hashes -o "$tmp"
+          uvx pip-audit --progress-spinner off -r "$tmp"

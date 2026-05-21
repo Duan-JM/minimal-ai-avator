@@ -1,11 +1,11 @@
 LLM:
-  LLM_API_KEY: "xxx"
+  LLM_API_KEY: "your-llm-api-key"
   LLM_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1"
   LLM_MODEL_NAME: "qwen-plus" # 可选: qwen-plus, qwen-max, qwen-turbo, gpt-4, gpt-3.5-turbo 等
 
 TTS:
-  DOUBAO_APPID: "api-key-20260414103911"
-  DOUBAO_TOKEN: "f305e775-c70f-4c67-a8e5-ffbfbc778797"
+  DOUBAO_APPID: "your-doubao-appid"
+  DOUBAO_TOKEN: "your-doubao-token"
 
 DOWNLOAD:
   BASE_URL: "https://huggingface.co/shibing624/ai-avatar-wav2lip/resolve/main"

@@ -3,7 +3,6 @@
 @author:XuMing(xuming624@qq.com)
 @description: Server
 """
-from flask import Flask
 import json
 import torch.multiprocessing as mp
 
@@ -32,7 +31,6 @@ from src.log import logger
 from src.get_file import http_get
 from src.config import get_model_download_config, get_avatar_download_config, get_avatars_config, get_avatar_config
 
-app = Flask(__name__)
 nerfreals: Dict[int, BaseReal] = {}  # sessionid:BaseReal
 opt = None
 model = None
