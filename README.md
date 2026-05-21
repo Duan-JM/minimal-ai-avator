@@ -193,10 +193,12 @@ uv run python backend/main.py \
 
 ## Docker 运行
 
-构建并启动：
+仓库提供单一 `docker-compose.yml`，通过 [Compose profiles](https://docs.docker.com/compose/profiles/) 切换部署模式。
+
+**一体化部署**（backend 同时托管前端）：
 
 ```bash
-docker compose up --build
+docker compose --profile integrated up --build
 ```
 
 容器会使用 `pyproject.toml` 和 `uv.lock` 同步依赖，并挂载：
@@ -205,11 +207,21 @@ docker compose up --build
 - `./data:/app/data`
 - `./backend/config.yml:/app/backend/config.yml:ro`
 
-默认访问地址：
+浏览器访问：
 
 ```text
 http://127.0.0.1:8010/index.html
 ```
+
+**前后端分离部署**（参见下文章节）：
+
+```bash
+docker compose --profile split up --build
+# 浏览器访问 http://127.0.0.1:8011/index.html
+```
+
+两个 profile 都监听 8010，二者互斥。不传 `--profile` 不会启动任何服务，也可以用
+`COMPOSE_PROFILES=integrated docker compose up --build` 通过环境变量指定。
 
 ## 前后端分离部署
 
@@ -266,10 +278,10 @@ CORS 默认放开所有来源（`allow_credentials=False`），可直接被任�
 ### 4. 用 Docker Compose 一键拉起分离部署
 
 ```bash
-docker compose -f docker-compose.split.yml up --build
+docker compose --profile split up --build
 ```
 
-该 compose 文件会启动两个服务：
+该 profile 会启动两个服务：
 
 - `aiavatar-backend`：监听 `8010`，传入 `--no-static`，仅暴露 API 与 `/data`。
 - `aiavatar-frontend`：基于 `frontend/Dockerfile` 的 nginx 镜像，监听 `8011`。
@@ -400,8 +412,7 @@ AI_AVATAR_LOG_LEVEL=INFO uv run python backend/main.py
 │   ├── nginx.conf                  # 前端镜像的 nginx 配置
 │   ├── config.template.js          # 容器启动时由 envsubst 渲染成 config.js
 │   └── docker-entrypoint.sh        # 渲染 config.js 的入口脚本
-├── docker-compose.yml              # 一体化部署
-├── docker-compose.split.yml        # 前后端分离部署
+├── docker-compose.yml              # 一体化 / 分离两个 profile（integrated、split）
 ├── pyproject.toml                  # uv 项目与依赖声明
 ├── uv.lock                         # uv 锁文件
 ├── run.sh                          # uv 启动脚本

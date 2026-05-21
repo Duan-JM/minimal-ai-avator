@@ -1,25 +1,67 @@
-version: "3.8"
+# 单一 compose 文件，支持两种部署模式（通过 profile 二选一）：
+#
+#   一体化（backend 同时托管前端）：
+#     docker compose --profile integrated up --build
+#     -> 浏览器访问 http://127.0.0.1:8010/index.html
+#
+#   前后端分离（backend 仅 API + nginx 单独托管前端）：
+#     docker compose --profile split up --build
+#     -> 浏览器访问 http://127.0.0.1:8011/index.html
+#
+# 两个 profile 互斥（都监听 8010）；不传 --profile 不会启动任何服务。
+# 也可以用环境变量代替：COMPOSE_PROFILES=integrated docker compose up --build。
+
+x-backend-common: &backend-common
+  build: .
+  image: aiavatar:latest
+  restart: unless-stopped
+  volumes:
+    - ./models:/app/models
+    - ./data:/app/data
+    - ./backend/config.yml:/app/backend/config.yml:ro
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
 
 services:
   aiavatar:
-    build: .
-    image: aiavatar:latest
+    <<: *backend-common
     container_name: aiavatar
-    restart: unless-stopped
+    profiles: ["integrated"]
     ports:
       - "8010:8010"
-    volumes:
-      - ./models:/app/models
-      - ./data:/app/data
-      - ./backend/config.yml:/app/backend/config.yml:ro
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     # Override default CMD args here if needed:
     # command: ["--avatar_id", "wav2lip_avatar_glass_man", "--port", "8010"]
+
+  aiavatar-backend:
+    <<: *backend-common
+    container_name: aiavatar-backend
+    profiles: ["split"]
+    command: ["--port", "8010", "--no-static"]
+    ports:
+      - "8010:8010"
+
+  aiavatar-frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: aiavatar-frontend:latest
+    container_name: aiavatar-frontend
+    profiles: ["split"]
+    restart: unless-stopped
+    depends_on:
+      - aiavatar-backend
+    environment:
+      # 浏览器需能访问到这里填的 URL；本地开发用 host 端口即可，
+      # 公网部署替换为对外可达的后端域名（HTTPS 时也要用 https://）。
+      - BACKEND_API_URL=http://localhost:8010
+      - BACKEND_MEDIA_URL=http://localhost:8010
+      - FRONTEND_ICE_SERVERS_JSON=[]
+    ports:
+      - "8011:80"

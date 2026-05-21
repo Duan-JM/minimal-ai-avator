@@ -67,8 +67,8 @@ uv run pytest tests/test_webrtc_tts_events.py -k start_end
 uv run python backend/src/gpu_server_test.py --url http://127.0.0.1:8080
 
 # Docker
-docker compose up --build                              # integrated
-docker compose -f docker-compose.split.yml up --build  # split (backend + nginx frontend)
+docker compose --profile integrated up --build  # integrated
+docker compose --profile split up --build       # split (backend + nginx frontend)
 
 # Generate a custom avatar from a video
 uv run python backend/src/wav2lip/genavatar.py \
@@ -114,7 +114,7 @@ uv run python backend/src/wav2lip/genavatar.py \
 - `serve.sh` - run a standalone static server (`python -m http.server`) for local frontend-only development.
 - `Dockerfile`, `nginx.conf`, `config.template.js`, `docker-entrypoint.sh` - build an nginx image that ships the static assets and renders `config.js` from `BACKEND_API_URL` / `BACKEND_MEDIA_URL` / `FRONTEND_ICE_SERVERS_JSON` env vars at container start.
 
-`docker-compose.yml` runs the integrated deployment; `docker-compose.split.yml` brings up backend (with `--no-static`) and the nginx frontend as two services.
+`docker-compose.yml` exposes two Compose profiles: `integrated` (single-port `aiavatar`) and `split` (`aiavatar-backend` with `--no-static` plus the nginx `aiavatar-frontend`). Pick one with `docker compose --profile <name> up`.
 
 **Tests**: `tests/` contains pytest/unittest tests for path resolution, LLM output filtering, TTS streaming, WebRTC TTS events, ASR buffering, and frontend audio behavior.
 
@@ -134,7 +134,7 @@ uv run python backend/src/wav2lip/genavatar.py \
 ### Infrastructure
 
 - **Dockerfile**: Builds from a GPU-capable PyTorch/Transformers image, installs system audio/video dependencies, syncs uv dependencies, and runs `python backend/main.py`.
-- **Docker Compose** (`docker-compose.yml`): Runs one `aiavatar` service on port `8010`, reserves one NVIDIA GPU, and mounts `./models`, `./data`, and `./backend/config.yml`.
+- **Docker Compose** (`docker-compose.yml`): Exposes two profiles. `integrated` runs a single `aiavatar` service on port 8010. `split` runs `aiavatar-backend` (port 8010, `--no-static`) plus `aiavatar-frontend` (nginx, port 8011). Both profiles mount `./models`, `./data`, and `./backend/config.yml`, and reserve one NVIDIA GPU for the backend container(s).
 - **Startup script** (`run.sh`): Convenience wrapper around `uv run python backend/main.py --avatar_id ... --port ...`.
 - **Docs/assets** (`docs/`): Images and troubleshooting notes used by project documentation.
 
