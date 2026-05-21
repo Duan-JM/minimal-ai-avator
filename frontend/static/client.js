@@ -30,7 +30,7 @@ function negotiate() {
         });
     }).then(() => {
         var offer = pc.localDescription;
-        return fetch('/offer', {
+        return fetch(window.apiUrl('/offer'), {
             body: JSON.stringify({
                 sdp: offer.sdp,
                 type: offer.type,
@@ -53,7 +53,7 @@ function negotiate() {
 function start() {
     var config = {
         sdpSemantics: 'unified-plan',
-        iceServers: []
+        iceServers: (window.APP_CONFIG && window.APP_CONFIG.iceServers) || []
     };
 
     pc = new RTCPeerConnection(config);

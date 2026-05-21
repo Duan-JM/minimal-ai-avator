@@ -382,6 +382,57 @@ async def on_shutdown(app):
     pcs.clear()
 
 
+def build_app(*, serve_static: bool = True, serve_data_static: bool = True) -> web.Application:
+    """构建 aiohttp 应用，注册 API 与（可选的）静态资源路由。
+
+    Args:
+        serve_static: 是否托管 ``frontend/static`` 作为根路径下的静态文件。
+            前后端分离部署时（前端单独由 nginx/CDN 托管），传 ``False`` 关闭。
+        serve_data_static: 是否托管 ``data/`` 目录用于头像图片等媒体。
+            分离部署时如果由 nginx/CDN 提供这些资源，可传 ``False`` 关闭。
+            默认开启以避免破坏现有头像加载行为。
+
+    Returns:
+        已注册路由、已挂上 CORS 与 shutdown 回调的 ``web.Application`` 实例。
+    """
+    app = web.Application(client_max_size=1024 ** 2 * 100)
+    app.on_shutdown.append(on_shutdown)
+
+    app.router.add_post("/offer", offer)
+    app.router.add_post("/human", human)
+    app.router.add_post("/humanaudio", humanaudio)
+    app.router.add_post("/set_audiotype", set_audiotype)
+    app.router.add_post("/record", record)
+    app.router.add_post("/interrupt_talk", interrupt_talk)
+    app.router.add_post("/is_speaking", is_speaking)
+    app.router.add_get("/api/avatars", get_avatars)
+
+    if serve_data_static:
+        app.router.add_static('/data', path=str(DATA_DIR))
+    else:
+        logger.info("Static data serving disabled (--no-data-static)")
+
+    if serve_static:
+        app.router.add_static('/', path=str(STATIC_DIR))
+    else:
+        logger.info("Static frontend serving disabled (--no-static); API-only mode")
+
+    # CORS：默认放开所有来源，方便前端独立部署。
+    # 注意：allow_credentials 保持 False，避免与通配 Origin 组合时被浏览器拒绝；
+    # 当前前端的 fetch 也未发送 credentials，因此切换为 False 不会改变行为。
+    cors = aiohttp_cors.setup(app, defaults={
+        "*": aiohttp_cors.ResourceOptions(
+            allow_credentials=False,
+            expose_headers="*",
+            allow_headers="*",
+        )
+    })
+    for route in list(app.router.routes()):
+        cors.add(route)
+
+    return app
+
+
 async def post(url, data):
     try:
         async with aiohttp.ClientSession() as session:
@@ -425,6 +476,13 @@ if __name__ == '__main__':
 
     parser.add_argument('--max_session', type=int, default=1)  # multi session count
     parser.add_argument('--port', type=int, default=8010, help="web listen port")
+    parser.add_argument('--host', type=str, default='0.0.0.0', help="web bind host")
+
+    # 前后端分离部署相关开关；默认与一体化部署一致，传入参数才会关闭对应的静态服务。
+    parser.add_argument('--no-static', dest='serve_static', action='store_false', default=True,
+                        help='不托管 frontend/static，作为 API-only 服务运行（前端单独部署时使用）')
+    parser.add_argument('--no-data-static', dest='serve_data_static', action='store_false', default=True,
+                        help='不托管 /data 目录（如果由 nginx/CDN 提供头像图片等媒体资源）')
 
     opt = parser.parse_args()
     opt.customopt = []
@@ -459,37 +517,20 @@ if __name__ == '__main__':
     preload_avatars(avatar_ids_to_preload)
 
     # app async
-    appasync = web.Application(client_max_size=1024 ** 2 * 100)
-    appasync.on_shutdown.append(on_shutdown)
-    appasync.router.add_post("/offer", offer)
-    appasync.router.add_post("/human", human)
-    appasync.router.add_post("/humanaudio", humanaudio)
-    appasync.router.add_post("/set_audiotype", set_audiotype)
-    appasync.router.add_post("/record", record)
-    appasync.router.add_post("/interrupt_talk", interrupt_talk)
-    appasync.router.add_post("/is_speaking", is_speaking)
-    appasync.router.add_get("/api/avatars", get_avatars)
-    appasync.router.add_static('/data', path=str(DATA_DIR))  # 添加data目录的静态文件访问
-    appasync.router.add_static('/', path=str(STATIC_DIR))
+    appasync = build_app(
+        serve_static=opt.serve_static,
+        serve_data_static=opt.serve_data_static,
+    )
 
-    # Configure default CORS settings.
-    cors = aiohttp_cors.setup(appasync, defaults={
-        "*": aiohttp_cors.ResourceOptions(
-            allow_credentials=True,
-            expose_headers="*",
-            allow_headers="*",
-        )
-    })
-    # Configure CORS on all routes.
-    for route in list(appasync.router.routes()):
-        cors.add(route)
-
-    logger.info('如果使用webrtc，推荐访问webrtc集成前端: http://0.0.0.0:' + str(opt.port) + '/index.html')
+    if opt.serve_static:
+        logger.info('一体化模式：前端访问 http://%s:%s/index.html', opt.host, opt.port)
+    else:
+        logger.info('API-only 模式：前端请单独部署并把 apiBaseUrl 指向 http://%s:%s', opt.host, opt.port)
 
     runner = web.AppRunner(appasync)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(runner.setup())
-    site = web.TCPSite(runner, '0.0.0.0', opt.port)
+    site = web.TCPSite(runner, opt.host, opt.port)
     loop.run_until_complete(site.start())
     loop.run_forever()

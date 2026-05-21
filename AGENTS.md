@@ -13,6 +13,7 @@ Minimal AI Avator is a real-time interactive digital human service powered by Wa
 - Optional idle/custom avatar video actions
 - First-run download of model and avatar assets
 - Local GPU inference, or split deployment with a remote GPU inference service
+- Optional split deployment: frontend can be hosted by nginx/CDN while the backend runs in API-only mode
 
 ## Commands
 
@@ -41,6 +42,12 @@ uv run python backend/main.py \
 # Start the remote GPU Wav2Lip inference service
 uv run python backend/src/gpu_wav2lip_service.py --host 0.0.0.0 --port 8080 --batch_size 32 --fp16
 
+# Run backend in API-only mode (frontend is hosted separately)
+uv run python backend/main.py --port 8010 --no-static
+
+# Serve the static frontend separately during development
+./frontend/serve.sh 5173
+
 # Connect the web/API service to a remote GPU service
 uv run python backend/main.py \
   --gpu_server_url http://GPU_SERVER_IP:8080 \
@@ -60,7 +67,8 @@ uv run pytest tests/test_webrtc_tts_events.py -k start_end
 uv run python backend/src/gpu_server_test.py --url http://127.0.0.1:8080
 
 # Docker
-docker compose up --build
+docker compose up --build                              # integrated
+docker compose -f docker-compose.split.yml up --build  # split (backend + nginx frontend)
 
 # Generate a custom avatar from a video
 uv run python backend/src/wav2lip/genavatar.py \
@@ -94,11 +102,19 @@ uv run python backend/src/wav2lip/genavatar.py \
    - `gpu_wav2lip_service.py` - standalone GPU inference service.
    - `wav2lip/` - Wav2Lip model utilities and avatar-generation scripts.
 
-**Frontend layout**: `frontend/static/` contains the static browser app served by `backend/main.py`.
+**Frontend layout**: `frontend/static/` contains the static browser app served by `backend/main.py` (or by an independent nginx/CDN in split deployment).
 
+- `config.js`, `api.js` - runtime configuration (`window.APP_CONFIG`) and URL helpers (`window.apiUrl`, `window.mediaUrl`, `window.apiFetch`). Editing `config.js` repoints API/media requests to a separately-deployed backend without rebuilding the client.
 - `index.html`, `client.js` - primary WebRTC demo/client flow.
 - `talk.html`, `client_talk.js` - conversational UI with avatar selection, speech recognition, subtitles, and media diagnostics.
 - `test.html` - simple test page.
+
+**Split-deployment artifacts** (under `frontend/`):
+
+- `serve.sh` - run a standalone static server (`python -m http.server`) for local frontend-only development.
+- `Dockerfile`, `nginx.conf`, `config.template.js`, `docker-entrypoint.sh` - build an nginx image that ships the static assets and renders `config.js` from `BACKEND_API_URL` / `BACKEND_MEDIA_URL` / `FRONTEND_ICE_SERVERS_JSON` env vars at container start.
+
+`docker-compose.yml` runs the integrated deployment; `docker-compose.split.yml` brings up backend (with `--no-static`) and the nginx frontend as two services.
 
 **Tests**: `tests/` contains pytest/unittest tests for path resolution, LLM output filtering, TTS streaming, WebRTC TTS events, ASR buffering, and frontend audio behavior.
 
@@ -107,8 +123,9 @@ uv run python backend/src/wav2lip/genavatar.py \
 - **Configuration**: Runtime configuration lives in `backend/config.yml` and is loaded via `src.config`. Never commit real LLM/TTS keys or tokens. Document new required config keys in `README.md`.
 - **Path handling**: Use `src.paths` instead of assuming the current working directory. Tests assert the split `backend/` + `frontend/` layout.
 - **Runtime assets**: Models and avatar data belong under top-level `models/` and `data/`. The main service can download configured assets on first run.
-- **Service architecture**: Browser clients create a WebRTC offer to `/offer`; the backend creates a `HumanPlayer`, binds audio/video tracks, and uses the data channel for LLM/TTS events.
+- **Service architecture**: Browser clients create a WebRTC offer to `/offer`; the backend creates a `HumanPlayer`, binds audio/video tracks, and uses the data channel for LLM/TTS events. Frontend URLs go through `window.apiUrl()` / `window.mediaUrl()` (see `frontend/static/api.js`) so the same client works whether the backend is same-origin or hosted on a separate domain.
 - **Inference modes**: Local mode loads Wav2Lip in the web/API process. Remote mode uses `--gpu_server_url` and `lipreal_remote.py` so CPU/web nodes can share a GPU service.
+- **Deployment modes**: Integrated mode (default) serves `frontend/static/` and `/data` from the API process. Split mode uses `--no-static` (and optionally `--no-data-static`) plus an independent static host (e.g. `frontend/Dockerfile` nginx image, or `frontend/serve.sh`). CORS is permissive (`allow_credentials=False`) so the browser can reach the backend cross-origin.
 - **State management**: Active sessions are keyed by `sessionid` in `backend/main.py`. Clean up peer connections and session state on closed/failed WebRTC connections.
 - **Logging**: Use `from src.log import logger` in backend code. Prefer structured, actionable log messages; control verbosity with `AI_AVATAR_LOG_LEVEL`.
 - **Error handling**: Surface configuration, download, network, and inference errors explicitly. Do not silently ignore failures that affect media playback or model availability.
