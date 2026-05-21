@@ -12,7 +12,7 @@ import time
 def test_health(base_url):
     """测试健康检查"""
     print("\n=== 测试健康检查 ===")
-    resp = requests.get(f"{base_url}/health")
+    resp = requests.get(f"{base_url}/health", timeout=10)
     print(f"Status: {resp.status_code}")
     print(f"Response: {resp.json()}")
     return resp.status_code == 200
@@ -34,7 +34,8 @@ def test_session(base_url, session_id):
         json={
             'session_id': session_id,
             'face_imgs': face_imgs
-        }
+        },
+        timeout=60,
     )
     
     print(f"Status: {resp.status_code}")
@@ -58,7 +59,8 @@ def test_inference(base_url, session_id):
             'mel_batch': mel_b64,
             'mel_shape': list(mel_batch.shape),
             'face_indices': [0, 1]  # 使用face 0和1
-        }
+        },
+        timeout=30,
     )
     elapsed = time.time() - start
     
@@ -85,7 +87,8 @@ def test_close_session(base_url, session_id):
     print("\n=== 测试关闭会话 ===")
     resp = requests.post(
         f"{base_url}/session/close",
-        json={'session_id': session_id}
+        json={'session_id': session_id},
+        timeout=10,
     )
     print(f"Status: {resp.status_code}")
     if resp.status_code == 200:

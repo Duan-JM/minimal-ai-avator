@@ -278,9 +278,21 @@ class BaseReal:
         self._record_video_pipe.wait()
         self._record_audio_pipe.stdin.close()
         self._record_audio_pipe.wait()
-        cmd_combine_audio = f"ffmpeg -y -i temp{self.opt.sessionid}.aac -i temp{self.opt.sessionid}.mp4 -c:v copy -c:a copy data/record.mp4"
-        os.system(cmd_combine_audio)
-        # os.remove(output_path)
+        audio_path = f"temp{self.opt.sessionid}.aac"
+        video_path = f"temp{self.opt.sessionid}.mp4"
+        output_path = os.path.join("data", "record.mp4")
+        cmd_combine = [
+            "ffmpeg", "-y",
+            "-i", audio_path,
+            "-i", video_path,
+            "-c:v", "copy",
+            "-c:a", "copy",
+            output_path,
+        ]
+        try:
+            subprocess.run(cmd_combine, check=True, shell=False)
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            logger.error(f"ffmpeg combine failed: {e}")
 
     def mirror_index(self, size, index):
         # size = len(self.coord_list_cycle)

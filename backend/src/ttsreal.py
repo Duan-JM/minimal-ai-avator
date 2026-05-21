@@ -160,7 +160,8 @@ class TencentTTS(BaseTTS):
         url = _PROTOCOL + _HOST + _PATH
         try:
             res = requests.post(url, headers=headers,
-                                data=json.dumps(params), stream=True)
+                                data=json.dumps(params), stream=True,
+                                timeout=(10, 60))
 
             end = time.perf_counter()
             logger.info(f"tencent Time to make POST: {end - start}s")
@@ -256,7 +257,8 @@ class DoubaoTTS(BaseTTS):
         self.request_json = {
             "app": {
                 "appid": appid,
-                "token": "access_token",
+                # 协议字段名（Doubao API 要求），实际 token 通过 Authorization header 传递
+                "token": "access_token",  # nosec B105 - field name, not a credential
                 "cluster": _cluster
             },
             "user": {

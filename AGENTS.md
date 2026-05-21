@@ -147,7 +147,7 @@ uv run python backend/src/wav2lip/genavatar.py \
 
 - **Package manager**: uv. Use `uv add`, `uv add --dev`, `uv lock`, and `uv sync` so both `pyproject.toml` and `uv.lock` stay consistent.
 - **Python**: `>=3.10,<3.11`.
-- **Core runtime dependencies**: aiohttp, aiohttp-cors, aiortc, av, Flask, OpenAI-compatible client, PyYAML, Loguru, NumPy/SciPy/librosa/resampy/soundfile, OpenCV headless, PyTorch/TorchAudio/TorchVision, Transformers, ffmpeg-python, websockets.
+- **Core runtime dependencies**: aiohttp, aiohttp-cors, aiortc, av, Flask, OpenAI-compatible client, PyYAML, Loguru, NumPy/SciPy/librosa/resampy/soundfile, OpenCV headless, PyTorch/TorchAudio/TorchVision, ffmpeg-python, websockets.
 - **Optional extras**:
   - `azure` for Azure Cognitive Services Speech.
   - `local-audio` for PyAudio/local playback support.

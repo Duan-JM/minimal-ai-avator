@@ -22,7 +22,7 @@ import os
 import time
 import cv2
 import glob
-import pickle
+import pickle  # nosec B403 - used only to load trusted local avatar coords files
 import copy
 
 import queue
@@ -46,11 +46,15 @@ _avatar_cache = {}
 
 
 def _load(checkpoint_path):
-    if device == 'cuda':
-        checkpoint = torch.load(checkpoint_path)  # ,weights_only=True
-    else:
-        checkpoint = torch.load(checkpoint_path,
-                                map_location=lambda storage, loc: storage)
+    map_location = None if device == 'cuda' else (lambda storage, loc: storage)
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=map_location, weights_only=True)
+    except Exception as exc:
+        logger.warning(
+            f"Safe torch.load(weights_only=True) failed for {checkpoint_path}: {exc}. "
+            "Falling back to weights_only=False; only load checkpoints you trust."
+        )
+        checkpoint = torch.load(checkpoint_path, map_location=map_location, weights_only=False)  # nosec B614
     return checkpoint
 
 
@@ -84,7 +88,7 @@ def load_avatar(avatar_id):
     coords_path = f"{avatar_path}/coords.pkl"
 
     with open(coords_path, 'rb') as f:
-        coord_list_cycle = pickle.load(f)
+        coord_list_cycle = pickle.load(f)  # nosec B301 - trusted, local avatar data
     input_img_list = glob.glob(os.path.join(full_imgs_path, '*.[jpJP][pnPN]*[gG]'))
     input_img_list = sorted(input_img_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
     frame_list_cycle = read_imgs(input_img_list)
