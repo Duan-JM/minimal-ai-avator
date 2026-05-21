@@ -13,6 +13,7 @@ Minimal AI Avator 是一个实时交互式数字人项目：前端通过 WebRTC 
 - 支持播放自定义待机视频动作
 - 支持模型与数字人素材首次运行自动下载
 - 支持本地 GPU 推理，也支持 GPU 服务与 Web 前端服务分离部署
+- 支持前后端分离部署：前端可由 nginx/CDN 单独托管，后端以 API-only 模式运行
 
 ## 环境要求
 
@@ -192,10 +193,12 @@ uv run python backend/main.py \
 
 ## Docker 运行
 
-构建并启动：
+仓库提供单一 `docker-compose.yml`，通过 [Compose profiles](https://docs.docker.com/compose/profiles/) 切换部署模式。
+
+**一体化部署**（backend 同时托管前端）：
 
 ```bash
-docker compose up --build
+docker compose --profile integrated up --build
 ```
 
 容器会使用 `pyproject.toml` 和 `uv.lock` 同步依赖，并挂载：
@@ -204,11 +207,100 @@ docker compose up --build
 - `./data:/app/data`
 - `./backend/config.yml:/app/backend/config.yml:ro`
 
-默认访问地址：
+浏览器访问：
 
 ```text
 http://127.0.0.1:8010/index.html
 ```
+
+**前后端分离部署**（参见下文章节）：
+
+```bash
+docker compose --profile split up --build
+# 浏览器访问 http://127.0.0.1:8011/index.html
+```
+
+两个 profile 都监听 8010，二者互斥。不传 `--profile` 不会启动任何服务，也可以用
+`COMPOSE_PROFILES=integrated docker compose up --build` 通过环境变量指定。
+
+## 前后端分离部署
+
+默认 `backend/main.py` 同时提供 API 与 `frontend/static/` 静态资源，单端口直接可用。
+如果想把前端单独部署到 nginx / CDN / 静态托管，可以按下面的方式拆开。
+
+### 1. 调整前端的运行时配置
+
+`frontend/static/config.js` 是浏览器侧的运行时配置，缺省值为同源（空字符串），保持一体化部署行为：
+
+```js
+window.APP_CONFIG = {
+    apiBaseUrl: '',         // 后端 API 与 WebRTC 信令的基础 URL
+    mediaBaseUrl: '',       // 后端静态媒体 URL，留空回落到 apiBaseUrl
+    iceServers: [],         // 传给浏览器 RTCPeerConnection 的 iceServers
+};
+```
+
+分离部署时把 `apiBaseUrl` 改成可被浏览器访问的后端地址，例如：
+
+```js
+window.APP_CONFIG = {
+    apiBaseUrl: 'https://api.your-domain.com',
+    mediaBaseUrl: 'https://api.your-domain.com',
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+};
+```
+
+所有 `fetch('/offer' | '/human' | '/api/avatars' | ...)` 和头像图片路径都会经过
+`window.apiUrl()` / `window.mediaUrl()` 自动前缀，无需改 HTML。
+
+### 2. 后端以 API-only 模式启动
+
+```bash
+uv run python backend/main.py --port 8010 --no-static
+```
+
+- `--no-static`：关闭对 `frontend/static/` 的托管（前端由其他服务器提供）。
+- `--no-data-static`：可选，如果头像图片由 CDN/nginx 提供，关闭后端 `/data` 静态资源。
+  默认保持开启，避免破坏头像加载。
+
+CORS 默认放开所有来源（`allow_credentials=False`），可直接被任意域名的前端访问。
+
+### 3. 单独运行前端（开发模式）
+
+```bash
+./frontend/serve.sh 5173
+# 浏览器访问 http://127.0.0.1:5173/index.html
+```
+
+`serve.sh` 实际上调用 `python3 -m http.server`，仅用于本地联调。
+生产环境推荐 nginx/Caddy 或托管到 CDN。
+
+### 4. 用 Docker Compose 一键拉起分离部署
+
+```bash
+docker compose --profile split up --build
+```
+
+该 profile 会启动两个服务：
+
+- `aiavatar-backend`：监听 `8010`，传入 `--no-static`，仅暴露 API 与 `/data`。
+- `aiavatar-frontend`：基于 `frontend/Dockerfile` 的 nginx 镜像，监听 `8011`。
+  容器启动时通过 `envsubst` 把 `BACKEND_API_URL`、`BACKEND_MEDIA_URL`、
+  `FRONTEND_ICE_SERVERS_JSON` 注入 `config.js`，同一份镜像可以服务于不同环境。
+
+浏览器访问 `http://localhost:8011/index.html`。
+部署到公网时把 `BACKEND_API_URL` 改成浏览器实际可访问的后端域名/端口，
+建议前后端共用同一 HTTPS 入口（例如反向代理后同源），避免浏览器 mixed-content 拦截。
+
+### 5. 注意事项
+
+- **HTTPS 与 Mixed Content**：前端走 HTTPS 时 `apiBaseUrl` 也必须是 HTTPS，否则
+  浏览器会拦截跨协议请求；麦克风权限亦需要 secure context（localhost 除外）。
+- **WebRTC 可达性**：`/offer` 只完成信令，后续音视频直接走 WebRTC。
+  在 NAT/容器/云主机环境下，请通过 `iceServers` 配置 STUN/TURN，
+  否则 ICE candidate 可能无法穿透。
+- **跨域凭据**：后端默认 `allow_credentials=False`，前端的 `fetch` 不要传
+  `credentials: 'include'`，否则浏览器会因为通配 Origin 而拒绝响应。
 
 ## 创建自己的数字人
 
@@ -314,7 +406,13 @@ AI_AVATAR_LOG_LEVEL=INFO uv run python backend/main.py
 │       ├── llm.py                  # LLM 对话逻辑
 │       └── wav2lip/                # Wav2Lip 模型与工具
 ├── frontend/
-│   └── static/                     # Web 前端
+│   ├── static/                     # Web 前端（含 config.js / api.js）
+│   ├── serve.sh                    # 本地独立托管前端的开发脚本
+│   ├── Dockerfile                  # 前端独立部署的 nginx 镜像
+│   ├── nginx.conf                  # 前端镜像的 nginx 配置
+│   ├── config.template.js          # 容器启动时由 envsubst 渲染成 config.js
+│   └── docker-entrypoint.sh        # 渲染 config.js 的入口脚本
+├── docker-compose.yml              # 一体化 / 分离两个 profile（integrated、split）
 ├── pyproject.toml                  # uv 项目与依赖声明
 ├── uv.lock                         # uv 锁文件
 ├── run.sh                          # uv 启动脚本

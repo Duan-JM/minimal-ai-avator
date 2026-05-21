@@ -11,6 +11,8 @@
     
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <script src="config.js"></script>
+    <script src="api.js"></script>
     <style>
         :root {
             --primary-color: #4361ee;
@@ -801,7 +803,7 @@
             // 录制功能
             $('#btn_start_record').click(function() {
                 console.log('Starting recording...');
-                fetch('/record', {
+                fetch(window.apiUrl('/record'), {
                     body: JSON.stringify({
                         type: 'start_record',
                         sessionid: parseInt(document.getElementById('sessionid').value),
@@ -826,7 +828,7 @@
 
             $('#btn_stop_record').click(function() {
                 console.log('Stopping recording...');
-                fetch('/record', {
+                fetch(window.apiUrl('/record'), {
                     body: JSON.stringify({
                         type: 'end_record',
                         sessionid: parseInt(document.getElementById('sessionid').value),
@@ -856,7 +858,7 @@
                 
                 console.log('Sending echo message:', message);
                 
-                fetch('/human', {
+                fetch(window.apiUrl('/human'), {
                     body: JSON.stringify({
                         text: message,
                         type: 'echo',
@@ -881,7 +883,7 @@
                 
                 console.log('Sending chat message:', message);
                 
-                fetch('/human', {
+                fetch(window.apiUrl('/human'), {
                     body: JSON.stringify({
                         text: message,
                         type: 'chat',
@@ -1031,7 +1033,7 @@
                     const recognizedText = $('#chat-message').val().trim();
                     if (recognizedText) {
                         // 发送识别的文本
-                        fetch('/human', {
+                        fetch(window.apiUrl('/human'), {
                             body: JSON.stringify({
                                 text: recognizedText,
                                 type: 'chat',

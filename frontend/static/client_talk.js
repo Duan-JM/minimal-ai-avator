@@ -79,14 +79,14 @@ class AvatarClient {
     async loadAvatarConfig() {
         try {
             // 从API获取avatar配置
-            const response = await fetch('/api/avatars');
+            const response = await fetch(window.apiUrl('/api/avatars'));
             const result = await response.json();
             
             if (result.code === 0 && result.data) {
                 const avatarConfig = result.data.find(a => a.id === this.avatarId);
                 if (avatarConfig) {
                     this.avatarName = avatarConfig.name;
-                    this.avatarImage = avatarConfig.image;
+                    this.avatarImage = window.mediaUrl(avatarConfig.image);
                     console.log(`Avatar配置加载成功: ${this.avatarName}, 图片: ${this.avatarImage}`);
                     
                     // 设置加载背景图和图标
@@ -282,7 +282,7 @@ class AvatarClient {
             // 创建 RTCPeerConnection
             this.pc = new RTCPeerConnection({
                 sdpSemantics: 'unified-plan',
-                iceServers: []
+                iceServers: (window.APP_CONFIG && window.APP_CONFIG.iceServers) || []
             });
 
             // 监听远程视频流
@@ -405,7 +405,7 @@ class AvatarClient {
             const startTime = Date.now();
             
             // 发送 offer 到服务器
-            const response = await fetch('/offer', {
+            const response = await fetch(window.apiUrl('/offer'), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -546,7 +546,7 @@ class AvatarClient {
             this.addChatMessage('user', text);
             
             // 使用/human接口，type='chat' - 参考index.html
-            const response = await fetch('/human', {
+            const response = await fetch(window.apiUrl('/human'), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
