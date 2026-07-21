@@ -71,6 +71,27 @@ def _cors_preflight(path):  # noqa: ARG001 - path captured for catch-all
 model = None
 model_fp16 = False  # 标记模型是否使用FP16
 sessions = {}  # 存储每个session的avatar数据
+BINARY_INFERENCE_MEDIA_TYPE = 'application/octet-stream'
+
+
+def _build_inference_response(pred_uint8, metrics):
+    batch_shape = list(pred_uint8.shape)
+    if BINARY_INFERENCE_MEDIA_TYPE in request.headers.get('Accept', ''):
+        response = make_response(pred_uint8.tobytes())
+        response.mimetype = BINARY_INFERENCE_MEDIA_TYPE
+        response.headers['X-Batch-Shape'] = ','.join(str(value) for value in batch_shape)
+        response.headers['X-Batch-Dtype'] = 'uint8'
+        response.headers['X-Inference-FPS'] = f"{metrics['fps']:.6f}"
+        return response
+
+    batch_b64 = base64.b64encode(pred_uint8.tobytes()).decode('utf-8')
+    return jsonify({
+        'status': 'ok',
+        'batch_data': batch_b64,
+        'batch_shape': batch_shape,
+        'batch_size': batch_shape[0],
+        **metrics,
+    })
 
 
 def download_models(model_path):
@@ -324,10 +345,6 @@ def inference_batch():
         # 优化：直接返回批量编码的numpy数组，避免逐帧编码
         pred_uint8 = pred_np.astype(np.uint8)
 
-        # 批量编码：将整个batch转为bytes，一次性base64编码
-        batch_bytes = pred_uint8.tobytes()
-        batch_b64 = base64.b64encode(batch_bytes).decode('utf-8')
-
         post_time = time.perf_counter() - post_start
 
         total_time = time.perf_counter() - start_time
@@ -336,20 +353,16 @@ def inference_batch():
         fps = actual_batch_size / total_time if total_time > 0 else 0
         gpu_util_pct = (infer_time / total_time * 100) if total_time > 0 else 0
 
-        logger.info(
+        logger.debug(
             f"Batch {actual_batch_size}: prep={prep_time:.4f}s({prep_time / total_time * 100:.1f}%), transfer={transfer_time:.4f}s({transfer_time / total_time * 100:.1f}%), infer={infer_time:.4f}s({gpu_util_pct:.1f}%), post={post_time:.4f}s({post_time / total_time * 100:.1f}%), total={total_time:.4f}s, FPS={fps:.1f}")
 
-        return jsonify({
-            'status': 'ok',
-            'batch_data': batch_b64,  # 批量数据
-            'batch_shape': list(pred_uint8.shape),  # 形状信息
-            'batch_size': actual_batch_size,
+        return _build_inference_response(pred_uint8, {
             'prep_time': prep_time,
             'transfer_time': transfer_time,
             'infer_time': infer_time,
             'post_time': post_time,
             'total_time': total_time,
-            'fps': fps
+            'fps': fps,
         })
 
     except Exception as e:

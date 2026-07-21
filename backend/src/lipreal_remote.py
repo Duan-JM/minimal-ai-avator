@@ -21,7 +21,11 @@ from threading import Thread, Event
 import torch.multiprocessing as mp
 from tqdm import tqdm
 
-from src.basereal import BaseReal
+from src.basereal import (
+    BaseReal,
+    _get_pipeline_queue_item,
+    _put_pipeline_queue_item,
+)
 from src.log import logger
 from src.lipasr import LipASR
 from src.paths import DATA_DIR
@@ -30,6 +34,35 @@ device = "cpu"  # 客户端使用CPU
 
 # 全局avatar缓存
 _avatar_cache = {}
+BINARY_INFERENCE_MEDIA_TYPE = 'application/octet-stream'
+
+
+def _decode_inference_response(response):
+    content_type = response.headers.get('Content-Type', '').split(';', 1)[0].strip().lower()
+    if content_type == BINARY_INFERENCE_MEDIA_TYPE:
+        shape_header = response.headers.get('X-Batch-Shape', '')
+        batch_shape = tuple(int(value) for value in shape_header.split(',') if value)
+        if len(batch_shape) != 4 or any(value <= 0 for value in batch_shape):
+            raise ValueError(f'Invalid binary batch shape: {shape_header!r}')
+        if response.headers.get('X-Batch-Dtype', 'uint8') != 'uint8':
+            raise ValueError('Unsupported binary batch dtype')
+
+        expected_size = int(np.prod(batch_shape, dtype=np.int64))
+        if len(response.content) != expected_size:
+            raise ValueError(
+                f'Binary batch size mismatch: expected {expected_size}, '
+                f'got {len(response.content)}'
+            )
+        frames = np.frombuffer(response.content, dtype=np.uint8).reshape(batch_shape)
+        fps = float(response.headers.get('X-Inference-FPS', 0))
+    else:
+        result = response.json()
+        batch_bytes = base64.b64decode(result['batch_data'])
+        batch_shape = tuple(result['batch_shape'])
+        frames = np.frombuffer(batch_bytes, dtype=np.uint8).reshape(batch_shape)
+        fps = float(result.get('fps', 0))
+
+    return frames.astype(np.float32), fps
 
 
 def load_avatar(avatar_id):
@@ -189,7 +222,8 @@ class RemoteGPUClient:
         try:
             if not self.session_initialized:
                 if not self.init_session():
-                    raise Exception("Failed to initialize remote session")
+                    logger.error("Failed to initialize remote GPU session")
+                    return None
             
             # 编码mel_batch（使用更高效的float16减少传输量）
             mel_float16 = mel_batch.astype(np.float16)  # 减半数据量
@@ -206,20 +240,18 @@ class RemoteGPUClient:
                     'mel_dtype': 'float16',  # 标记数据类型
                     'face_indices': face_indices
                 },
+                headers={'Accept': BINARY_INFERENCE_MEDIA_TYPE},
                 timeout=10
             )
             
             if resp.status_code == 200:
-                result = resp.json()
-                batch_bytes = base64.b64decode(result['batch_data'])
-                batch_shape = tuple(result['batch_shape'])
-                frames = np.frombuffer(batch_bytes, dtype=np.uint8).reshape(batch_shape)
-                logger.info(f"✓ Remote inference OK: batch_shape={batch_shape}, fps={result.get('fps', 0):.1f}")
-                return frames.astype(np.float32)
+                frames, fps = _decode_inference_response(resp)
+                logger.debug(f"Remote inference OK: batch_shape={frames.shape}, fps={fps:.1f}")
+                return frames
             else:
                 logger.error(f"Remote inference failed: {resp.status_code} {resp.text}")
                 return None
-        except Exception as e:
+        except (requests.RequestException, KeyError, TypeError, ValueError):
             logger.exception("Error in remote inference")
             return None
     
@@ -260,14 +292,23 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue, audio_o
         is_all_silence = True
         audio_frames = []
         for _ in range(batch_size*2):
-            frame, type, eventpoint = audio_out_queue.get()
+            received, audio_item = _get_pipeline_queue_item(quit_event, audio_out_queue)
+            if not received:
+                return
+            frame, type, eventpoint = audio_item
             audio_frames.append((frame, type, eventpoint))
             if type == 0:
                 is_all_silence = False
 
         if is_all_silence:
             for i in range(batch_size):
-                res_frame_queue.put((None, __mirror_index(length, index), audio_frames[i*2:i*2+2]))
+                queued = _put_pipeline_queue_item(
+                    quit_event,
+                    res_frame_queue,
+                    (None, __mirror_index(length, index), audio_frames[i*2:i*2+2]),
+                )
+                if not queued:
+                    return
                 index = index + 1
         else:
             # logger.debug(f"🎤 Speech detected, calling remote inference (batch_size={batch_size})")
@@ -289,7 +330,13 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue, audio_o
             if pred is None:
                 logger.error("Remote inference failed, using silence frames")
                 for i in range(batch_size):
-                    res_frame_queue.put((None, __mirror_index(length, index), audio_frames[i*2:i*2+2]))
+                    queued = _put_pipeline_queue_item(
+                        quit_event,
+                        res_frame_queue,
+                        (None, __mirror_index(length, index), audio_frames[i*2:i*2+2]),
+                    )
+                    if not queued:
+                        return
                     index = index + 1
                 continue
             
@@ -306,7 +353,13 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue, audio_o
             # 【优化】直接遍历，避免enumerate开销
             # logger.debug(f"📹 Putting {len(pred)} frames to queue, pred shape={pred.shape}, dtype={pred.dtype}, value_range=[{pred.min():.1f}, {pred.max():.1f}]")
             for i in range(len(pred)):
-                res_frame_queue.put((pred[i], __mirror_index(length, index), audio_frames[i*2:i*2+2]))
+                queued = _put_pipeline_queue_item(
+                    quit_event,
+                    res_frame_queue,
+                    (pred[i], __mirror_index(length, index), audio_frames[i*2:i*2+2]),
+                )
+                if not queued:
+                    return
                 index = index + 1
                 
     logger.debug('lipreal remote inference processor stop')
@@ -368,7 +421,7 @@ class LipReal(BaseReal):
         
         while not quit_event.is_set(): 
             t = time.perf_counter()
-            self.asr.run_step()
+            self.asr.run_step(quit_event)
 
             # 流量控制：当视频帧队列积压过多时，暂停生产以避免延迟累积
             if video_track and video_track._queue.qsize() >= 30:
@@ -376,12 +429,9 @@ class LipReal(BaseReal):
 
         logger.info('lipreal thread stop')
 
-        # 停止推理线程
         infer_quit_event.set()
-        infer_thread.join()
-
-        # 停止帧处理线程
         process_quit_event.set()
+        infer_thread.join()
         process_thread.join()
         
         # 关闭远程session

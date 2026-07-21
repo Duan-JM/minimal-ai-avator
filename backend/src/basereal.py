@@ -26,7 +26,12 @@ import resampy
 
 import queue
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    Future,
+    ThreadPoolExecutor,
+    TimeoutError as FutureTimeoutError,
+    as_completed,
+)
 from io import BytesIO
 import soundfile as sf
 
@@ -36,6 +41,94 @@ from av import AudioFrame, VideoFrame
 from src.ttsreal import TencentTTS, DoubaoTTS, DoubaoTTS3, AzureTTS, VllmOmniTTS
 from src.log import logger
 from src.audio_monitor import get_monitor
+
+
+TRACK_QUEUE_OPERATION_TIMEOUT = 0.05
+TRACK_QUEUE_RETRY_INTERVAL = 0.005
+PIPELINE_QUEUE_OPERATION_TIMEOUT = 0.1
+
+
+def _try_enqueue_track_item(loop, target_queue, item, timeout=TRACK_QUEUE_OPERATION_TIMEOUT):
+    """Attempt one thread-safe, non-blocking enqueue on the event loop."""
+    completion = Future()
+    deadline = time.monotonic() + timeout
+
+    def enqueue():
+        if not completion.set_running_or_notify_cancel():
+            return
+        if time.monotonic() > deadline:
+            completion.set_result(False)
+            return
+        try:
+            target_queue.put_nowait(item)
+        except asyncio.QueueFull:
+            completion.set_result(False)
+        else:
+            completion.set_result(True)
+
+    loop.call_soon_threadsafe(enqueue)
+    try:
+        return completion.result(timeout=timeout)
+    except FutureTimeoutError:
+        if completion.cancel():
+            return False
+        try:
+            return completion.result(timeout=timeout)
+        except FutureTimeoutError:
+            return False
+
+
+def _enqueue_track_item_with_backpressure(
+        quit_event,
+        loop,
+        target_queue,
+        item,
+        timeout=TRACK_QUEUE_OPERATION_TIMEOUT,
+        retry_interval=TRACK_QUEUE_RETRY_INTERVAL,
+):
+    """Wait for bounded queue capacity without leaving pending asyncio puts."""
+    retries = 0
+    while not quit_event.is_set():
+        if loop.is_closed():
+            return False, retries
+        try:
+            if _try_enqueue_track_item(loop, target_queue, item, timeout=timeout):
+                return True, retries
+        except RuntimeError:
+            return False, retries
+        retries += 1
+        quit_event.wait(retry_interval)
+    return False, retries
+
+
+def _get_pipeline_queue_item(
+        quit_event,
+        target_queue,
+        timeout=PIPELINE_QUEUE_OPERATION_TIMEOUT,
+):
+    """Read from a worker queue while allowing shutdown to interrupt the wait."""
+    while not quit_event.is_set():
+        try:
+            return True, target_queue.get(timeout=timeout)
+        except queue.Empty:
+            continue
+    return False, None
+
+
+def _put_pipeline_queue_item(
+        quit_event,
+        target_queue,
+        item,
+        timeout=PIPELINE_QUEUE_OPERATION_TIMEOUT,
+):
+    """Write to a worker queue while allowing shutdown to interrupt backpressure."""
+    while not quit_event.is_set():
+        try:
+            target_queue.put(item, timeout=timeout)
+            return True
+        except queue.Full:
+            continue
+    return False
 
 
 def read_imgs(img_list, max_workers=8):
@@ -391,7 +484,23 @@ class BaseReal:
             cv2.putText(combine_frame, "", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128, 128, 128), 1)
             image = combine_frame
             new_frame = VideoFrame.from_ndarray(image, format="bgr24")
-            asyncio.run_coroutine_threadsafe(video_track._queue.put((new_frame, None)), loop)
+            video_queued, video_retries = _enqueue_track_item_with_backpressure(
+                quit_event,
+                loop,
+                video_track._queue,
+                (new_frame, None),
+            )
+            if video_retries:
+                self._video_queue_backpressure_count = (
+                    getattr(self, '_video_queue_backpressure_count', 0) + 1
+                )
+                if self._video_queue_backpressure_count % 100 == 1:
+                    logger.warning(
+                        f'Video queue backpressure events: '
+                        f'{self._video_queue_backpressure_count}'
+                    )
+            if not video_queued:
+                break
             self.record_video_data(combine_frame)
 
             for audio_frame in audio_frames:
@@ -427,26 +536,24 @@ class BaseReal:
                 # 记录音频帧生产
                 self.audio_monitor.record_frame_produced()
 
-                # 优化音频队列放入逻辑,避免阻塞导致掉帧
-                # 如果队列满,尝试非阻塞放入,失败则记录警告但继续处理
-                try:
-                    # 使用put_nowait避免阻塞,如果队列满会抛出QueueFull异常
-                    future = asyncio.run_coroutine_threadsafe(
-                        audio_track._queue.put((new_frame, eventpoint)),
-                        loop
-                    )
-                    # 设置较短的超时时间(50ms),避免长时间等待
-                    future.result(timeout=0.05)
-                except Exception as e:
-                    # 队列满或超时,记录警告但不影响后续帧处理
+                audio_queued, audio_retries = _enqueue_track_item_with_backpressure(
+                    quit_event,
+                    loop,
+                    audio_track._queue,
+                    (new_frame, eventpoint),
+                )
+                if audio_retries:
                     self.audio_monitor.record_queue_full()
                     if not hasattr(self, '_audio_queue_warning_count'):
                         self._audio_queue_warning_count = 0
                     self._audio_queue_warning_count += 1
-                    # 每100次只记录1次,避免日志刷屏
                     if self._audio_queue_warning_count % 100 == 1:
                         logger.warning(
-                            f'Audio queue full or timeout, dropped frames: {self._audio_queue_warning_count}')
+                            f'Audio queue backpressure events: '
+                            f'{self._audio_queue_warning_count}'
+                        )
+                if not audio_queued:
+                    break
 
                 self.record_audio_data(frame)
         logger.info('basereal process_frames thread stop')
