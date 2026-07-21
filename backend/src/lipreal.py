@@ -32,7 +32,11 @@ import torch.multiprocessing as mp
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tqdm import tqdm
-from src.basereal import BaseReal
+from src.basereal import (
+    BaseReal,
+    _get_pipeline_queue_item,
+    _put_pipeline_queue_item,
+)
 from src.paths import DATA_DIR
 from src.wav2lip.models import Wav2Lip
 from src.lipasr import LipASR
@@ -235,14 +239,23 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue, audio_o
         is_all_silence = True
         audio_frames = []
         for _ in range(batch_size * 2):
-            frame, type, eventpoint = audio_out_queue.get()
+            received, audio_item = _get_pipeline_queue_item(quit_event, audio_out_queue)
+            if not received:
+                return
+            frame, type, eventpoint = audio_item
             audio_frames.append((frame, type, eventpoint))
             if type == 0:
                 is_all_silence = False
 
         if is_all_silence:
             for i in range(batch_size):
-                res_frame_queue.put((None, __mirror_index(length, index), audio_frames[i * 2:i * 2 + 2]))
+                queued = _put_pipeline_queue_item(
+                    quit_event,
+                    res_frame_queue,
+                    (None, __mirror_index(length, index), audio_frames[i * 2:i * 2 + 2]),
+                )
+                if not queued:
+                    return
                 index = index + 1
         else:
             t = time.perf_counter()
@@ -273,7 +286,13 @@ def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue, audio_o
                 count = 0
                 counttime = 0
             for i, res_frame in enumerate(pred):
-                res_frame_queue.put((res_frame, __mirror_index(length, index), audio_frames[i * 2:i * 2 + 2]))
+                queued = _put_pipeline_queue_item(
+                    quit_event,
+                    res_frame_queue,
+                    (res_frame, __mirror_index(length, index), audio_frames[i * 2:i * 2 + 2]),
+                )
+                if not queued:
+                    return
                 index = index + 1
     logger.debug('lipreal inference processor stop')
 
@@ -337,7 +356,7 @@ class LipReal(BaseReal):
             # update texture every frame
             # audio stream thread...
             t = time.perf_counter()
-            self.asr.run_step()
+            self.asr.run_step(quit_event)
 
             if video_track and video_track._queue.qsize() >= 5:
                 # 流量控制：队列积压较多时短暂让步，但不过度 sleep
@@ -350,7 +369,6 @@ class LipReal(BaseReal):
         logger.info('lipreal thread stop')
 
         infer_quit_event.set()
-        infer_thread.join()
-
         process_quit_event.set()
+        infer_thread.join()
         process_thread.join()

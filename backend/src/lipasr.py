@@ -16,6 +16,7 @@
 ###############################################################################
 
 import numpy as np
+import queue
 
 from src.baseasr import BaseASR
 from src.wav2lip import audio
@@ -23,10 +24,12 @@ from src.wav2lip import audio
 
 class LipASR(BaseASR):
 
-    def run_step(self):
+    def run_step(self, quit_event=None):
         ############################################## extract audio feature ##############################################
         # get a frame of audio
         for _ in range(self.batch_size*2):
+            if quit_event is not None and quit_event.is_set():
+                return
             frame,type,eventpoint = self.get_audio_frame()
             self.frames.append(frame)
             # put to output
@@ -53,7 +56,15 @@ class LipASR(BaseASR):
             else:
                 mel_chunks.append(mel[:, start_idx : start_idx + mel_step_size])
             i += 1
-        self.feat_queue.put(mel_chunks)
+        if quit_event is None:
+            self.feat_queue.put(mel_chunks)
+        else:
+            while not quit_event.is_set():
+                try:
+                    self.feat_queue.put(mel_chunks, timeout=0.1)
+                    break
+                except queue.Full:
+                    continue
         
         # discard the old part to save memory
         self.frames = self.frames[-(self.stride_left_size + self.stride_right_size):]

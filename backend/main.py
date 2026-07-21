@@ -40,6 +40,7 @@ avatar = None
 pcs = set()
 
 default_model_path = str(MODELS_DIR / 'wav2lip.pth')
+DEFAULT_INFERENCE_BATCH_SIZE = 16
 
 
 def ensure_models_and_avatars():
@@ -458,7 +459,12 @@ if __name__ == '__main__':
 
     # musetalk opt
     parser.add_argument('--avatar_id', type=str, default='wav2lip_avatar_long_hair_girl', help="define which avatar in data directory")
-    parser.add_argument('--batch_size', type=int, default=64, help="infer batch")
+    parser.add_argument(
+        '--batch_size',
+        type=int,
+        default=DEFAULT_INFERENCE_BATCH_SIZE,
+        help="infer batch (smaller values reduce realtime latency)",
+    )
     parser.add_argument('--customvideo_config', type=str, default='', help="custom action json")
 
     parser.add_argument('--tts', type=str, default='doubao3',
