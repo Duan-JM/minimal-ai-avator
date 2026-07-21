@@ -7,9 +7,19 @@ import queue
 import sys
 import threading
 import time
+import types
 import unittest
 
 import numpy as np
+
+if "src.wav2lip.models" not in sys.modules:
+    wav2lip_models = types.ModuleType("src.wav2lip.models")
+
+    class _StubWav2Lip:
+        pass
+
+    wav2lip_models.Wav2Lip = _StubWav2Lip
+    sys.modules["src.wav2lip.models"] = wav2lip_models
 
 _basereal = sys.modules.get("src.basereal")
 if _basereal is None or not hasattr(_basereal, "_try_enqueue_track_item"):
