@@ -301,6 +301,9 @@ docker compose --profile split up --build
   否则 ICE candidate 可能无法穿透。
 - **跨域凭据**：后端默认 `allow_credentials=False`，前端的 `fetch` 不要传
   `credentials: 'include'`，否则浏览器会因为通配 Origin 而拒绝响应。
+- **失败恢复**：浏览器 API 请求默认 10 秒超时；会话已满、服务未就绪、网络
+  断开等错误会显示明确提示。`talk.html` 提供重新连接入口，页面退出时会关闭
+  PeerConnection、媒体轨和相关定时器。
 
 ## 创建自己的数字人
 

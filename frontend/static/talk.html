@@ -150,6 +150,39 @@
             text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6);
         }
 
+        .retry-connection-btn {
+            display: none;
+            margin-top: 1.25rem;
+            padding: 0.7rem 1.4rem;
+            border: none;
+            border-radius: 999px;
+            background: #7c3aed;
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .error-banner {
+            position: fixed;
+            top: 5rem;
+            left: 50%;
+            transform: translate(-50%, -20px);
+            z-index: 300;
+            max-width: min(90vw, 560px);
+            padding: 0.8rem 1.2rem;
+            border-radius: 12px;
+            background: rgba(220, 38, 38, 0.92);
+            color: white;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s, transform 0.2s;
+        }
+
+        .error-banner.show {
+            opacity: 1;
+            transform: translate(-50%, 0);
+        }
+
         /* 顶部导航栏 */
         .top-nav {
             position: fixed;
@@ -615,9 +648,12 @@
                 </div>
                 <div class="loading-text" id="loadingText">Connecting...</div>
                 <div class="loading-progress" id="loadingProgress">正在准备数字人...</div>
+                <button class="retry-connection-btn" id="retryConnectionBtn">重新连接</button>
             </div>
         </div>
     </div>
+
+    <div class="error-banner" id="errorBanner" role="alert"></div>
 
     <!-- 顶部导航 -->
     <div class="top-nav">

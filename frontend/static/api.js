@@ -1,6 +1,18 @@
 // API/媒体 URL 助手。
 // 依赖 config.js 在它之前加载，保证 window.APP_CONFIG 已就绪。
 (function () {
+    const DEFAULT_TIMEOUT_MS = 10000;
+
+    class ApiError extends Error {
+        constructor(message, { code = 'request_failed', status = 0, retryable = false } = {}) {
+            super(message);
+            this.name = 'ApiError';
+            this.code = code;
+            this.status = status;
+            this.retryable = retryable;
+        }
+    }
+
     function stripTrailingSlash(url) {
         if (typeof url !== 'string') return '';
         return url.replace(/\/+$/, '');
@@ -46,11 +58,79 @@
         return joinBase(getMediaBaseUrl(), path);
     }
 
-    function apiFetch(path, options) {
-        return fetch(apiUrl(path), options);
+    async function apiFetch(path, options = {}) {
+        const {
+            timeoutMs = DEFAULT_TIMEOUT_MS,
+            signal: externalSignal,
+            ...fetchOptions
+        } = options;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+        if (externalSignal) {
+            if (externalSignal.aborted) {
+                controller.abort();
+            } else {
+                externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+            }
+        }
+
+        try {
+            const response = await fetch(apiUrl(path), {
+                ...fetchOptions,
+                signal: controller.signal,
+            });
+            if (!response.ok) {
+                let payload = {};
+                try {
+                    payload = await response.clone().json();
+                } catch (error) {
+                    console.warn('API错误响应不是JSON:', error);
+                }
+                throw new ApiError(
+                    payload.msg || `Request failed with status ${response.status}`,
+                    {
+                        code: payload.error || 'http_error',
+                        status: response.status,
+                        retryable: response.status === 429 || response.status >= 500,
+                    }
+                );
+            }
+            return response;
+        } catch (error) {
+            if (error instanceof ApiError) {
+                throw error;
+            }
+            if (error && error.name === 'AbortError') {
+                throw new ApiError('请求超时，请重试', {
+                    code: 'request_timeout',
+                    retryable: true,
+                });
+            }
+            throw new ApiError('无法连接到服务，请检查网络或服务状态', {
+                code: 'network_error',
+                retryable: true,
+            });
+        } finally {
+            clearTimeout(timeout);
+        }
     }
 
+    async function apiJson(path, options) {
+        const response = await apiFetch(path, options);
+        try {
+            return await response.json();
+        } catch (error) {
+            throw new ApiError('服务返回了无效响应', {
+                code: 'invalid_response',
+                status: response.status,
+            });
+        }
+    }
+
+    window.ApiError = ApiError;
     window.apiUrl = apiUrl;
     window.mediaUrl = mediaUrl;
     window.apiFetch = apiFetch;
+    window.apiJson = apiJson;
 })();

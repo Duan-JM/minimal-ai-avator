@@ -10,6 +10,7 @@ class AvatarClient {
         this.mediaRecorder = null;
         this.audioChunks = [];
         this.recognition = null;
+        this.speechRecognitionSupported = false;
         
         // 状态管理
         this.isConnected = false;
@@ -26,10 +27,10 @@ class AvatarClient {
         this.loadingOverlay = document.getElementById('loadingOverlay');
         this.subtitleOverlay = document.getElementById('subtitleOverlay');
         this.startChatBtn = document.getElementById('startChatBtn');
-        this.audioContext = null;
-        this.audioSource = null;
-        this.audioAnalyser = null;
-        this.audioLevelTimer = null;
+        this.retryConnectionBtn = document.getElementById('retryConnectionBtn');
+        this.errorBanner = document.getElementById('errorBanner');
+        this.errorTimer = null;
+        this.connectionRetryTimer = null;
         this.setupRemoteMediaDiagnostics();
         
         // 获取URL参数
@@ -52,6 +53,7 @@ class AvatarClient {
             // 隐藏所有控制按钮（calling状态）
             this.hideControlButtons();
             this.setupStartButton();
+            this.setupRetryButton();
 
             // 预先绑定一次用户交互恢复播放，兼容移动端自动播放策略
             this.bindMediaResumeHandlers();
@@ -67,7 +69,7 @@ class AvatarClient {
             
         } catch (error) {
             console.error('初始化失败:', error);
-            this.showError('初始化失败，请刷新页面重试');
+            this.showConnectionError(this.formatConnectionError(error));
         }
     }
 
@@ -78,9 +80,7 @@ class AvatarClient {
 
     async loadAvatarConfig() {
         try {
-            // 从API获取avatar配置
-            const response = await fetch(window.apiUrl('/api/avatars'));
-            const result = await response.json();
+            const result = await window.apiJson('/api/avatars');
             
             if (result.code === 0 && result.data) {
                 const avatarConfig = result.data.find(a => a.id === this.avatarId);
@@ -97,6 +97,7 @@ class AvatarClient {
             }
         } catch (error) {
             console.error('加载avatar配置失败:', error);
+            throw error;
         }
     }
 
@@ -142,6 +143,13 @@ class AvatarClient {
             } catch (error) {
                 console.warn('手动开启声音失败:', error);
             }
+        });
+    }
+
+    setupRetryButton() {
+        if (!this.retryConnectionBtn) return;
+        this.retryConnectionBtn.addEventListener('click', () => {
+            this.retryConnection();
         });
     }
 
@@ -195,54 +203,7 @@ class AvatarClient {
         }
     }
 
-    setupAudioLevelMonitor() {
-        if (!this.remoteAudio || this.audioAnalyser) return;
-
-        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-        if (!AudioContextClass) {
-            console.warn('当前浏览器不支持 AudioContext，无法监测远端音频电平');
-            return;
-        }
-
-        try {
-            this.audioContext = this.audioContext || new AudioContextClass();
-            this.audioSource = this.audioSource || this.audioContext.createMediaElementSource(this.remoteAudio);
-            this.audioAnalyser = this.audioContext.createAnalyser();
-            this.audioAnalyser.fftSize = 2048;
-            this.audioSource.connect(this.audioAnalyser);
-            this.audioAnalyser.connect(this.audioContext.destination);
-
-            const data = new Uint8Array(this.audioAnalyser.frequencyBinCount);
-            this.audioLevelTimer = setInterval(() => {
-                if (!this.audioAnalyser) return;
-                this.audioAnalyser.getByteTimeDomainData(data);
-                let sum = 0;
-                for (let i = 0; i < data.length; i++) {
-                    const normalized = (data[i] - 128) / 128;
-                    sum += normalized * normalized;
-                }
-                const rms = Math.sqrt(sum / data.length);
-                console.log('远端音频电平', {
-                    rms: Number(rms.toFixed(4)),
-                    paused: this.remoteAudio.paused,
-                    currentTime: Number(this.remoteAudio.currentTime.toFixed(3))
-                });
-            }, 1000);
-        } catch (error) {
-            console.warn('初始化音频电平监测失败:', error);
-        }
-    }
-
     async resumeRemotePlayback() {
-        if (this.audioContext && this.audioContext.state !== 'running') {
-            try {
-                await this.audioContext.resume();
-                console.log('AudioContext resumed:', this.audioContext.state);
-            } catch (error) {
-                console.warn('AudioContext resume 失败:', error);
-            }
-        }
-
         if (this.remoteVideo && this.remoteVideo.srcObject) {
             try {
                 await this.remoteVideo.play();
@@ -319,7 +280,6 @@ class AvatarClient {
                 } else if (event.track.kind === 'audio') {
                     this.remoteAudio.srcObject = stream;
                     console.log('远端音频流已绑定到 audio 元素');
-                    this.setupAudioLevelMonitor();
                     await this.resumeRemotePlayback();
                 }
             });
@@ -336,12 +296,25 @@ class AvatarClient {
                 console.log('连接状态:', this.pc.connectionState);
                 if (this.pc.connectionState === 'connected') {
                     this.isConnected = true;
+                    if (this.connectionRetryTimer) {
+                        clearTimeout(this.connectionRetryTimer);
+                        this.connectionRetryTimer = null;
+                    }
                     this.hideLoading();
                     // 接通后显示所有控制按钮
                     this.showControlButtons();
                     this.resumeRemotePlayback();
                 } else if (this.pc.connectionState === 'failed') {
-                    this.showError('连接失败，请刷新页面重试');
+                    this.showConnectionError('连接已失败，请重新连接');
+                } else if (this.pc.connectionState === 'disconnected') {
+                    if (this.connectionRetryTimer) {
+                        clearTimeout(this.connectionRetryTimer);
+                    }
+                    this.connectionRetryTimer = setTimeout(() => {
+                        if (this.pc && this.pc.connectionState === 'disconnected') {
+                            this.showConnectionError('连接已中断，请重新连接');
+                        }
+                    }, 3000);
                 }
             };
 
@@ -349,14 +322,12 @@ class AvatarClient {
             this.dataChannel = this.pc.createDataChannel('chat');
             this.setupDataChannel();
 
-            // 参考 client.js 的 negotiate 方法
             await this.negotiate();
 
             console.log('WebRTC连接成功');
 
         } catch (error) {
             console.error('连接失败:', error);
-            this.showError('连接失败: ' + error.message);
             throw error;
         }
     }
@@ -366,7 +337,6 @@ class AvatarClient {
             // 添加进度提示
             this.updateLoadingProgress('正在建立连接...');
             
-            // 添加 transceiver - 参考 client.js
             this.pc.addTransceiver('video', { direction: 'recvonly' });
             this.pc.addTransceiver('audio', { direction: 'recvonly' });
 
@@ -405,7 +375,7 @@ class AvatarClient {
             const startTime = Date.now();
             
             // 发送 offer 到服务器
-            const response = await fetch(window.apiUrl('/offer'), {
+            const answer = await window.apiJson('/offer', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -416,8 +386,6 @@ class AvatarClient {
                     avatar_id: this.avatarId
                 })
             });
-
-            const answer = await response.json();
             
             // 记录耗时
             const elapsedTime = Date.now() - startTime;
@@ -546,7 +514,7 @@ class AvatarClient {
             this.addChatMessage('user', text);
             
             // 使用/human接口，type='chat' - 参考index.html
-            const response = await fetch(window.apiUrl('/human'), {
+            const data = await window.apiJson('/human', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -558,15 +526,13 @@ class AvatarClient {
                     sessionid: this.sessionid
                 })
             });
-
-            const data = await response.json();
             console.log('发送成功:', data);
             
             // LLM回答会通过数据通道返回，在handleDataChannelMessage中处理
 
         } catch (error) {
             console.error('发送消息失败:', error);
-            this.showError('发送失败，请重试');
+            this.showError(this.formatConnectionError(error));
         }
     }
 
@@ -604,6 +570,7 @@ class AvatarClient {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         
         if (SpeechRecognition) {
+            this.speechRecognitionSupported = true;
             this.recognition = new SpeechRecognition();
             this.recognition.continuous = true; // 持续识别
             this.recognition.interimResults = true; // 中间结果
@@ -646,6 +613,7 @@ class AvatarClient {
             };
         } else {
             console.warn('浏览器不支持语音识别');
+            this.speechRecognitionSupported = false;
         }
     }
 
@@ -730,6 +698,10 @@ class AvatarClient {
     // 参考index.html的录音实现
     async startVoiceInput() {
         if (this.isRecording) return;
+        if (!this.speechRecognitionSupported) {
+            this.showError('当前浏览器不支持语音识别，请使用 Chrome 或改用文字输入');
+            return;
+        }
         
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -770,7 +742,13 @@ class AvatarClient {
             
         } catch (error) {
             console.error('无法访问麦克风:', error);
-            this.showError('无法访问麦克风，请检查浏览器权限设置');
+            if (error && error.name === 'NotAllowedError') {
+                this.showError('麦克风权限被拒绝，请在浏览器设置中允许访问');
+            } else if (error && error.name === 'NotFoundError') {
+                this.showError('未检测到可用麦克风，请连接设备后重试');
+            } else {
+                this.showError('无法访问麦克风，请检查浏览器权限设置');
+            }
         }
     }
 
@@ -848,11 +826,68 @@ class AvatarClient {
 
     hideLoading() {
         this.loadingOverlay.classList.add('hidden');
+        if (this.retryConnectionBtn) {
+            this.retryConnectionBtn.style.display = 'none';
+            this.retryConnectionBtn.disabled = false;
+        }
+    }
+
+    formatConnectionError(error) {
+        if (!error) return '操作失败，请重试';
+        switch (error.code) {
+            case 'session_limit_reached':
+                return '当前会话已满，请稍后重试';
+            case 'request_timeout':
+                return '服务响应超时，请检查后端状态后重试';
+            case 'network_error':
+                return '无法连接到后端，请检查服务地址和网络';
+            case 'session_not_found':
+                return '会话已结束，请重新连接';
+            default:
+                return error.message || '操作失败，请重试';
+        }
+    }
+
+    showConnectionError(message) {
+        const loadingText = document.getElementById('loadingText');
+        this.loadingOverlay.classList.remove('hidden');
+        if (loadingText) loadingText.textContent = '连接失败';
+        this.updateLoadingProgress(message);
+        if (this.retryConnectionBtn) {
+            this.retryConnectionBtn.style.display = 'inline-flex';
+            this.retryConnectionBtn.disabled = false;
+        }
+        this.hideControlButtons();
+    }
+
+    async retryConnection() {
+        if (this.retryConnectionBtn) {
+            this.retryConnectionBtn.disabled = true;
+        }
+        this.disconnect();
+        const loadingText = document.getElementById('loadingText');
+        if (loadingText) loadingText.textContent = '正在重新连接';
+        this.updateLoadingProgress('正在准备数字人...');
+        try {
+            await this.connect();
+        } catch (error) {
+            console.error('重新连接失败:', error);
+            this.showConnectionError(this.formatConnectionError(error));
+        }
     }
 
     showError(message) {
         console.error(message);
-        alert(message);
+        if (!this.errorBanner) return;
+        if (this.errorTimer) {
+            clearTimeout(this.errorTimer);
+        }
+        this.errorBanner.textContent = message;
+        this.errorBanner.classList.add('show');
+        this.errorTimer = setTimeout(() => {
+            this.errorBanner.classList.remove('show');
+            this.errorTimer = null;
+        }, 4000);
     }
 
     /**
@@ -953,7 +988,7 @@ class AvatarClient {
                     }
                 });
             } catch (e) {
-                // stats 获取失败不影响主流程
+                console.debug('WebRTC stats 获取失败:', e);
             }
         }, 3000);
     }
@@ -966,34 +1001,56 @@ class AvatarClient {
     }
 
     disconnect() {
-        // 停止质量监控
         this.stopStatsMonitor();
-
-        // 停止语音识别
         this.stopVoiceInput();
 
-        // 关闭数据通道
+        if (this.connectionRetryTimer) {
+            clearTimeout(this.connectionRetryTimer);
+            this.connectionRetryTimer = null;
+        }
+
+        if (this.mediaRecorder && this.mediaRecorder.stream) {
+            this.mediaRecorder.stream.getTracks().forEach(track => track.stop());
+        }
+        this.mediaRecorder = null;
+
+        if (this.recognition) {
+            try {
+                this.recognition.abort();
+            } catch (error) {
+                console.debug('语音识别清理失败:', error);
+            }
+        }
+
         if (this.dataChannel) {
             this.dataChannel.close();
             this.dataChannel = null;
         }
 
-        // 关闭 PeerConnection
         if (this.pc) {
-            // 延迟关闭以确保清理完成
-            setTimeout(() => {
-                if (this.pc) {
-                    this.pc.close();
-                    this.pc = null;
-                }
-            }, 500);
+            this.pc.onconnectionstatechange = null;
+            this.pc.close();
+            this.pc = null;
         }
 
-        if (this.audioLevelTimer) {
-            clearInterval(this.audioLevelTimer);
-            this.audioLevelTimer = null;
+        if (this.remoteVideo) {
+            this.remoteVideo.srcObject = null;
+        }
+        if (this.remoteAudio) {
+            this.remoteAudio.srcObject = null;
         }
 
+        if (this.subtitleTimer) {
+            clearTimeout(this.subtitleTimer);
+            this.subtitleTimer = null;
+        }
+        if (this.errorTimer) {
+            clearTimeout(this.errorTimer);
+            this.errorTimer = null;
+            if (this.errorBanner) this.errorBanner.classList.remove('show');
+        }
+
+        this.sessionid = 0;
         this.isConnected = false;
     }
 }
@@ -1020,8 +1077,12 @@ let avatarClient;
 })();
 
 // 页面关闭时断开连接
-window.onunload = function(event) {
-    if (avatarClient && avatarClient.pc) {
-        avatarClient.pc.close();
+window.addEventListener('pagehide', () => {
+    if (avatarClient) avatarClient.disconnect();
+});
+
+window.addEventListener('pageshow', (event) => {
+    if (event.persisted && avatarClient && !avatarClient.isConnected) {
+        avatarClient.retryConnection();
     }
-};
+});

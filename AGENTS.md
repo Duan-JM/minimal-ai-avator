@@ -105,9 +105,8 @@ uv run python backend/src/wav2lip/genavatar.py \
 **Frontend layout**: `frontend/static/` contains the static browser app served by `backend/main.py` (or by an independent nginx/CDN in split deployment).
 
 - `config.js`, `api.js` - runtime configuration (`window.APP_CONFIG`) and URL helpers (`window.apiUrl`, `window.mediaUrl`, `window.apiFetch`). Editing `config.js` repoints API/media requests to a separately-deployed backend without rebuilding the client.
-- `index.html`, `client.js` - primary WebRTC demo/client flow.
+- `index.html` - avatar selection and the primary entry point.
 - `talk.html`, `client_talk.js` - conversational UI with avatar selection, speech recognition, subtitles, and media diagnostics.
-- `test.html` - simple test page.
 
 **Split-deployment artifacts** (under `frontend/`):
 
