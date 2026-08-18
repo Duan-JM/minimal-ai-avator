@@ -15,8 +15,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "frontend" / "static"
 
-HTML_FILES = ["index.html", "talk.html", "test.html"]
-JS_CLIENT_FILES = ["client.js", "client_talk.js"]
+HTML_FILES = ["index.html", "talk.html"]
+JS_CLIENT_FILES = ["client_talk.js"]
 
 
 class FrontendConfigModuleTests(unittest.TestCase):
@@ -38,6 +38,10 @@ class FrontendConfigModuleTests(unittest.TestCase):
         self.assertIn("window.apiUrl", text)
         self.assertIn("window.mediaUrl", text)
         self.assertIn("window.apiFetch", text)
+        self.assertIn("window.apiJson", text)
+        self.assertIn("window.ApiError", text)
+        self.assertIn("AbortController", text)
+        self.assertIn("response.ok", text)
 
     def test_api_js_passes_through_absolute_urls(self):
         text = (STATIC / "api.js").read_text(encoding="utf-8")
@@ -67,19 +71,11 @@ class FrontendHtmlIncludesHelpersTests(unittest.TestCase):
                 )
 
     def test_html_loads_helpers_before_client_scripts(self):
-        # talk.html and test.html include client(_talk).js after the helpers.
-        # index.html has only an inline script that uses the helpers.
-        for name in ("talk.html", "test.html"):
-            with self.subTest(html=name):
-                text = (STATIC / name).read_text(encoding="utf-8")
-                api_idx = text.find('src="api.js"')
-                client_idx = re.search(r'src="client(?:_talk)?\.js"', text)
-                self.assertIsNotNone(client_idx, f"{name} missing client script")
-                self.assertLess(
-                    api_idx,
-                    client_idx.start(),
-                    f"{name} should load api.js before client script",
-                )
+        text = (STATIC / "talk.html").read_text(encoding="utf-8")
+        api_idx = text.find('src="api.js"')
+        client_idx = text.find('src="client_talk.js"')
+        self.assertGreater(client_idx, -1, "talk.html missing client script")
+        self.assertLess(api_idx, client_idx)
 
 
 class FrontendUsesHelpersForBackendCallsTests(unittest.TestCase):
@@ -111,21 +107,22 @@ class FrontendUsesHelpersForBackendCallsTests(unittest.TestCase):
                     f"{path.name} has raw same-origin fetch calls: {matches}",
                 )
 
-    def test_backend_paths_are_routed_through_apiurl(self):
-        # For each backend path used in the codebase, ensure the call site uses
-        # window.apiUrl(...). This guards against future regressions.
+    def test_backend_paths_are_routed_through_api_helpers(self):
+        # Backend paths must use apiUrl(...) or the higher-level apiJson(...).
         for path, text in self._files_to_scan():
             for endpoint in self.BACKEND_PATHS:
                 if endpoint not in text:
                     continue
                 with self.subTest(file=path.name, endpoint=endpoint):
                     pattern = re.compile(
-                        r"window\.apiUrl\(\s*['\"]" + re.escape(endpoint) + r"['\"]"
+                        r"window\.(?:apiUrl|apiJson)\(\s*['\"]"
+                        + re.escape(endpoint)
+                        + r"['\"]"
                     )
                     self.assertRegex(
                         text,
                         pattern,
-                        f"{path.name} references {endpoint} without window.apiUrl",
+                        f"{path.name} references {endpoint} without an API helper",
                     )
 
     def test_avatar_image_paths_go_through_mediaurl(self):
@@ -135,6 +132,18 @@ class FrontendUsesHelpersForBackendCallsTests(unittest.TestCase):
 
         client_talk = (STATIC / "client_talk.js").read_text(encoding="utf-8")
         self.assertIn("window.mediaUrl(avatarConfig.image)", client_talk)
+
+    def test_frontend_uses_structured_json_requests(self):
+        index_html = (STATIC / "index.html").read_text(encoding="utf-8")
+        client_talk = (STATIC / "client_talk.js").read_text(encoding="utf-8")
+        self.assertIn("window.apiJson('/api/avatars')", index_html)
+        self.assertIn("window.apiJson('/offer'", client_talk)
+        self.assertIn("window.apiJson('/human'", client_talk)
+
+    def test_no_external_avatar_placeholder_request(self):
+        index_html = (STATIC / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn("picsum.photos", index_html)
+        self.assertIn("favicon.svg", index_html)
 
 
 class FrontendIceServersAreConfigurableTests(unittest.TestCase):
@@ -149,6 +158,12 @@ class FrontendIceServersAreConfigurableTests(unittest.TestCase):
                     r"window\.APP_CONFIG\s*&&\s*window\.APP_CONFIG\.iceServers",
                     f"{name} should read iceServers from window.APP_CONFIG",
                 )
+
+
+class FrontendLegacySurfaceTests(unittest.TestCase):
+    def test_legacy_test_client_is_removed(self):
+        self.assertFalse((STATIC / "test.html").exists())
+        self.assertFalse((STATIC / "client.js").exists())
 
 
 if __name__ == "__main__":

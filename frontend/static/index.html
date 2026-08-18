@@ -227,8 +227,7 @@
         
         async function loadAvatars() {
             try {
-                const response = await fetch(window.apiUrl('/api/avatars'));
-                const result = await response.json();
+                const result = await window.apiJson('/api/avatars');
                 
                 if (result.code === 0 && result.data) {
                     avatars = result.data;
@@ -252,8 +251,7 @@
                 card.className = 'avatar-card';
                 card.onclick = () => openAvatarChat(avatar.id, avatar.name);
                 
-                // 使用实际图片，如果不存在则使用占位图
-                const imageSrc = window.mediaUrl(avatar.image) || `https://picsum.photos/seed/${avatar.id}/600/400`;
+                const imageSrc = window.mediaUrl(avatar.image) || 'favicon.svg';
                 
                 card.innerHTML = `
                     <div class="avatar-card-header">
@@ -272,7 +270,7 @@
                              alt="${avatar.name}" 
                              class="avatar-image loading"
                              loading="eager"
-                             onerror="this.onerror=null; this.src='https://picsum.photos/seed/${avatar.id}/600/400';">
+                             onerror="this.onerror=null; this.src='favicon.svg';">
                     </div>
                 `;
                 
