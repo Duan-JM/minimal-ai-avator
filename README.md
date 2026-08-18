@@ -391,6 +391,24 @@ uv run python backend/src/gpu_server_test.py --url http://127.0.0.1:8080
 AI_AVATAR_LOG_LEVEL=INFO uv run python backend/main.py
 ```
 
+### 健康检查与会话容量
+
+主服务提供两个无需模型推理的健康检查接口：
+
+- `GET /health/live`：进程存活检查。
+- `GET /health/ready`：服务就绪检查，同时返回当前会话数和容量。
+
+`--max_session` 控制同时存在的 WebRTC 会话数，默认值为 `1`。容量用尽时
+`POST /offer` 返回 HTTP `429`，不会继续创建 GPU、媒体线程或 TTS 资源：
+
+```bash
+uv run python backend/main.py --max_session 2
+```
+
+业务接口对无效 JSON、参数、会话和过大请求分别使用标准的 4xx/5xx HTTP
+状态码，并返回 `code`、`error`、`msg` 字段。音频上传及其他请求体上限为
+10 MiB。WebRTC 断开或服务退出时会清理媒体资源、LLM 任务引用和对话历史。
+
 ## 项目结构
 
 ```text

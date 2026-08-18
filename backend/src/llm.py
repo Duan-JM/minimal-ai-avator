@@ -14,6 +14,8 @@ show_api_key = api_key[:10] + "..."
 client = OpenAI(
     api_key=api_key,
     base_url=base_url,
+    timeout=60.0,
+    max_retries=1,
 )
 logger.debug(f"llm api_key: {show_api_key}, llm base_url: {base_url}, llm model: {model_name}")
 

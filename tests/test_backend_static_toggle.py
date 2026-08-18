@@ -20,6 +20,8 @@ import main  # noqa: E402  (must follow sys.path manipulation)
 
 
 API_ROUTES = {
+    "/health/live",
+    "/health/ready",
     "/offer",
     "/human",
     "/humanaudio",
