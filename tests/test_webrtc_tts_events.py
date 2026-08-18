@@ -87,6 +87,18 @@ class WebRTCTTSEventTests(unittest.TestCase):
             ["llm", "tts_start", "tts_end"],
         )
 
+    def test_error_event_uses_data_channel(self):
+        player = HumanPlayer(DummyContainer())
+        channel = DummyDataChannel()
+        player.set_data_channel(channel)
+
+        player.send_error("LLM unavailable")
+
+        self.assertEqual(
+            channel.sent,
+            [{"type": "error", "message": "LLM unavailable"}],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

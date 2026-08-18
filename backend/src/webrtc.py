@@ -242,6 +242,20 @@ class HumanPlayer:
         self._data_channel = data_channel
         logger.info("Data channel set for HumanPlayer")
 
+    def send_error(self, message: str):
+        if not self._data_channel or self._data_channel.readyState != 'open':
+            return
+
+        import json
+
+        try:
+            self._data_channel.send(json.dumps({
+                'type': 'error',
+                'message': message,
+            }))
+        except Exception as e:
+            logger.error(f"Failed to send data channel error: {e}")
+
     @property
     def audio(self) -> MediaStreamTrack:
         """

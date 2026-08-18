@@ -17,7 +17,8 @@ import asyncio
 import uuid
 import os
 import sys
-from typing import Dict
+from dataclasses import dataclass, field
+from typing import Dict, Optional, Set
 
 backend_dir = os.path.abspath(os.path.dirname(__file__))
 if backend_dir not in sys.path:
@@ -27,11 +28,31 @@ from src.paths import DATA_DIR, MODELS_DIR, STATIC_DIR, resolve_project_path
 from src.webrtc import HumanPlayer
 from src.basereal import BaseReal
 from src.llm import llm_response
+from src.llm import clear_conversation_history
 from src.log import logger
 from src.get_file import http_get
 from src.config import get_model_download_config, get_avatar_download_config, get_avatars_config, get_avatar_config
 
-nerfreals: Dict[int, BaseReal] = {}  # sessionid:BaseReal
+
+@dataclass
+class SessionState:
+    sessionid: int
+    nerfreal: BaseReal
+    player: HumanPlayer
+    pc: RTCPeerConnection
+    llm_tasks: Set[asyncio.Future] = field(default_factory=set)
+
+
+class ApiError(Exception):
+    def __init__(self, status: int, error: str, message: str):
+        super().__init__(message)
+        self.status = status
+        self.error = error
+        self.message = message
+
+
+sessions: Dict[int, Optional[SessionState]] = {}
+llm_tasks: Set[asyncio.Future] = set()
 opt = None
 model = None
 avatar = None
@@ -41,6 +62,9 @@ pcs = set()
 
 default_model_path = str(MODELS_DIR / 'wav2lip.pth')
 DEFAULT_INFERENCE_BATCH_SIZE = 16
+DEFAULT_MAX_UPLOAD_SIZE = 10 * 1024 ** 2
+MAX_SESSIONS_KEY = web.AppKey("max_sessions", int)
+READY_KEY = web.AppKey("ready", bool)
 
 
 def ensure_models_and_avatars():
@@ -98,292 +122,370 @@ def ensure_models_and_avatars():
     logger.info("=== 所有文件检查完成 ===")
 
 
-def build_nerfreal(sessionid: int) -> BaseReal:
-    opt.sessionid = sessionid
-    # 检查是否使用远程GPU服务
-    if opt.gpu_server_url:
-        from src.lipreal_remote import LipReal
-        logger.info(f"Using remote GPU service: {opt.gpu_server_url}")
+def json_response(payload: dict, status: int = 200) -> web.Response:
+    return web.json_response(payload, status=status)
+
+
+async def parse_json_object(request: web.Request) -> dict:
+    try:
+        params = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, TypeError) as exc:
+        raise ApiError(400, "invalid_json", "Request body must be valid JSON") from exc
+    if not isinstance(params, dict):
+        raise ApiError(400, "invalid_json", "Request body must be a JSON object")
+    return params
+
+
+def get_session_id(params: dict) -> int:
+    raw_sessionid = params.get("sessionid")
+    if isinstance(raw_sessionid, bool):
+        raise ApiError(400, "invalid_session", "sessionid must be an integer")
+    if isinstance(raw_sessionid, int):
+        sessionid = raw_sessionid
+    elif isinstance(raw_sessionid, str) and raw_sessionid.isdigit():
+        sessionid = int(raw_sessionid)
     else:
-        from src.lipreal import LipReal
-        logger.info("Using local device")
-    nerfreal = LipReal(opt, model, avatar)
-    return nerfreal
+        raise ApiError(400, "invalid_session", "sessionid must be an integer")
+    if sessionid <= 0:
+        raise ApiError(400, "invalid_session", "sessionid must be a positive integer")
+    return sessionid
+
+
+def get_session(sessionid: int) -> SessionState:
+    state = sessions.get(sessionid)
+    if state is None:
+        if sessionid in sessions:
+            raise ApiError(409, "session_initializing", "Session is still initializing")
+        raise ApiError(404, "session_not_found", "Session does not exist or has ended")
+    return state
+
+
+def reserve_session(max_sessions: int) -> int:
+    if len(sessions) >= max_sessions:
+        raise ApiError(429, "session_limit_reached", "The server has reached its session limit")
+
+    for _ in range(10):
+        sessionid = uuid.uuid4().int % 1000000
+        if sessionid > 0 and sessionid not in sessions:
+            sessions[sessionid] = None
+            return sessionid
+    raise ApiError(503, "session_id_unavailable", "Unable to allocate a session")
+
+
+async def cleanup_session(sessionid: int, *, close_peer: bool = True) -> None:
+    state = sessions.pop(sessionid, None)
+    clear_conversation_history(sessionid)
+    if state is None:
+        return
+
+    state.llm_tasks.clear()
+    try:
+        state.nerfreal.flush_talk()
+    except Exception:
+        logger.exception(f"Session {sessionid} failed to flush during cleanup")
+
+    if close_peer and state.pc.connectionState != "closed":
+        try:
+            await state.pc.close()
+        except Exception:
+            logger.exception(f"Session {sessionid} peer connection failed to close")
+    pcs.discard(state.pc)
+
+    for track in (state.player.audio, state.player.video):
+        if track.readyState != "ended":
+            try:
+                track.stop()
+            except Exception:
+                logger.exception(f"Session {sessionid} media track failed to stop")
+
+    logger.info(f"Session {sessionid} cleaned up; active sessions={len(sessions)}")
+
+
+def on_llm_task_done(sessionid: int, task: asyncio.Future) -> None:
+    llm_tasks.discard(task)
+    state = sessions.get(sessionid)
+    if state is not None:
+        state.llm_tasks.discard(task)
+    if task.cancelled():
+        if state is None:
+            clear_conversation_history(sessionid)
+        return
+    try:
+        task.result()
+    except Exception:
+        logger.exception(f"Session {sessionid} LLM task failed")
+        if state is not None:
+            state.player.send_error("LLM service is unavailable. Please try again.")
+    finally:
+        if state is None:
+            clear_conversation_history(sessionid)
+
+
+@web.middleware
+async def api_error_middleware(request: web.Request, handler):
+    try:
+        return await handler(request)
+    except ApiError as exc:
+        return json_response(
+            {"code": -1, "error": exc.error, "msg": exc.message},
+            status=exc.status,
+        )
+    except web.HTTPRequestEntityTooLarge:
+        return json_response(
+            {"code": -1, "error": "payload_too_large", "msg": "Request body is too large"},
+            status=413,
+        )
+    except web.HTTPException:
+        raise
+    except Exception:
+        logger.exception(f"Unhandled API error: {request.method} {request.path}")
+        return json_response(
+            {"code": -1, "error": "internal_error", "msg": "Internal server error"},
+            status=500,
+        )
 
 
 async def offer(request):
-    params = await request.json()
-    offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
+    params = await parse_json_object(request)
+    sdp = params.get("sdp")
+    offer_type = params.get("type")
+    if not isinstance(sdp, str) or not sdp:
+        raise ApiError(400, "invalid_offer", "sdp must be a non-empty string")
+    if offer_type != "offer":
+        raise ApiError(400, "invalid_offer", "type must be 'offer'")
+
+    sessionid = reserve_session(request.app[MAX_SESSIONS_KEY])
+    pc = None
+    player = None
+
+    try:
+        rtc_offer = RTCSessionDescription(sdp=sdp, type=offer_type)
     
-    # 获取avatar_id参数，如果没有则使用默认
-    avatar_id = params.get("avatar_id", opt.avatar_id)
-    logger.info(f'Requested avatar_id: {avatar_id}')
+        # 获取avatar_id参数，如果没有则使用默认
+        avatar_id = params.get("avatar_id", opt.avatar_id)
+        if not isinstance(avatar_id, str) or not avatar_id:
+            raise ApiError(400, "invalid_avatar", "avatar_id must be a non-empty string")
+        logger.info(f'Requested avatar_id: {avatar_id}')
     
-    # 根据avatar_id加载对应的配置
-    avatar_config = get_avatar_config(avatar_id)
-    if avatar_config:
-        logger.info(f'Using avatar: {avatar_config["name"]} ({avatar_config["description"]})')
-        # 临时修改opt以使用指定的avatar配置
+        # 根据avatar_id加载对应的配置
+        avatar_config = get_avatar_config(avatar_id)
         temp_opt = argparse.Namespace(**vars(opt))
-        temp_opt.avatar_id = avatar_config["avatar_dir"]
-        temp_opt.REF_FILE = avatar_config["tts_config"]["voice"]
-        temp_opt.tts = avatar_config["tts_config"]["type"]
-        if temp_opt.tts != opt.tts or temp_opt.REF_FILE != opt.REF_FILE:
-            logger.info(
-                f"Avatar config overrides CLI TTS settings: "
-                f"cli_tts={opt.tts}, cli_voice={opt.REF_FILE} -> "
-                f"avatar_tts={temp_opt.tts}, avatar_voice={temp_opt.REF_FILE}"
-            )
-    else:
-        temp_opt = opt
-        logger.warning(f'Avatar config not found for {avatar_id}, using default')
-
-    sessionid = uuid.uuid4().int % 1000000
-    nerfreals[sessionid] = None
-    logger.debug(f"sessionid={sessionid}, session num={len(nerfreals)}")
-    
-    # 使用temp_opt构建nerfreal
-    temp_opt.sessionid = sessionid
-    if temp_opt.gpu_server_url:
-        from src.lipreal_remote import LipReal
-        logger.info(f"Using remote GPU service: {temp_opt.gpu_server_url}")
-    else:
-        from src.lipreal import LipReal
-        logger.info("Using local device")
-    
-    # 为这个会话加载对应的avatar
-    if temp_opt.avatar_id != opt.avatar_id:
-        # 需要加载不同的avatar
-        if temp_opt.gpu_server_url:
-            from src.lipreal_remote import load_avatar as load_avatar_remote
-            session_avatar = load_avatar_remote(temp_opt.avatar_id)
+        if avatar_config:
+            logger.info(f'Using avatar: {avatar_config["name"]} ({avatar_config["description"]})')
+            temp_opt.avatar_id = avatar_config["avatar_dir"]
+            temp_opt.REF_FILE = avatar_config["tts_config"]["voice"]
+            temp_opt.tts = avatar_config["tts_config"]["type"]
+            if temp_opt.tts != opt.tts or temp_opt.REF_FILE != opt.REF_FILE:
+                logger.info(
+                    f"Avatar config overrides CLI TTS settings: "
+                    f"cli_tts={opt.tts}, cli_voice={opt.REF_FILE} -> "
+                    f"avatar_tts={temp_opt.tts}, avatar_voice={temp_opt.REF_FILE}"
+                )
         else:
-            from src.lipreal import load_avatar as load_avatar_local
-            session_avatar = load_avatar_local(temp_opt.avatar_id)
-    else:
-        session_avatar = avatar
-    
-    nerfreal = LipReal(temp_opt, model, session_avatar)
-    logger.info(
-        f"Session {sessionid} effective TTS config: type={temp_opt.tts}, voice={temp_opt.REF_FILE}"
-    )
-    nerfreals[sessionid] = nerfreal
-    pc = RTCPeerConnection(configuration=RTCConfiguration(
-        iceServers=[],
-    ))
-    pcs.add(pc)
+            logger.warning(f'Avatar config not found for {avatar_id}, using default')
 
-    @pc.on("connectionstatechange")
-    async def on_connectionstatechange():
-        logger.info(f"Connection state is {pc.connectionState}  sessionid={sessionid}")
-        if pc.connectionState == "failed":
-            await pc.close()
-            pcs.discard(pc)
-            if sessionid in nerfreals:
-                del nerfreals[sessionid]
-        if pc.connectionState == "closed":
-            pcs.discard(pc)
-            if sessionid in nerfreals:
-                del nerfreals[sessionid]
+        logger.debug(f"sessionid={sessionid}, session num={len(sessions)}")
     
-    @pc.on("datachannel")
-    def on_datachannel(channel):
-        logger.info(f"Data channel established: {channel.label}")
-        # 将数据通道传递给player，以便发送LLM回答
-        player.set_data_channel(channel)
+        # 使用temp_opt构建nerfreal
+        temp_opt.sessionid = sessionid
+        if temp_opt.gpu_server_url:
+            from src.lipreal_remote import LipReal
+            logger.info(f"Using remote GPU service: {temp_opt.gpu_server_url}")
+        else:
+            from src.lipreal import LipReal
+            logger.info("Using local device")
+    
+        # 为这个会话加载对应的avatar
+        if temp_opt.avatar_id != opt.avatar_id:
+            if temp_opt.gpu_server_url:
+                from src.lipreal_remote import load_avatar as load_avatar_remote
+                session_avatar = load_avatar_remote(temp_opt.avatar_id)
+            else:
+                from src.lipreal import load_avatar as load_avatar_local
+                session_avatar = load_avatar_local(temp_opt.avatar_id)
+        else:
+            session_avatar = avatar
+    
+        nerfreal = LipReal(temp_opt, model, session_avatar)
+        logger.info(
+            f"Session {sessionid} effective TTS config: type={temp_opt.tts}, voice={temp_opt.REF_FILE}"
+        )
+        pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=[]))
+        pcs.add(pc)
+        player = HumanPlayer(nerfreal)
+        state = SessionState(sessionid, nerfreal, player, pc)
+        sessions[sessionid] = state
+
+        @pc.on("connectionstatechange")
+        async def on_connectionstatechange():
+            logger.info(f"Connection state is {pc.connectionState}  sessionid={sessionid}")
+            if pc.connectionState in {"failed", "closed"}:
+                if pc.connectionState == "failed":
+                    await pc.close()
+                await cleanup_session(sessionid, close_peer=False)
+
+        @pc.on("datachannel")
+        def on_datachannel(channel):
+            logger.info(f"Data channel established: {channel.label}")
+            player.set_data_channel(channel)
         
-        @channel.on("message")
-        def on_message(message):
-            logger.debug(f"Received message from client: {message}")
+            @channel.on("message")
+            def on_message(message):
+                logger.debug(f"Received message from client: {message}")
 
-    player = HumanPlayer(nerfreals[sessionid])
-    audio_sender = pc.addTrack(player.audio)
-    video_sender = pc.addTrack(player.video)
-    capabilities = RTCRtpSender.getCapabilities("video")
-    preferences = list(filter(lambda x: x.name == "H264", capabilities.codecs))
-    preferences += list(filter(lambda x: x.name == "VP8", capabilities.codecs))
-    preferences += list(filter(lambda x: x.name == "rtx", capabilities.codecs))
-    transceiver = pc.getTransceivers()[1]
-    transceiver.setCodecPreferences(preferences)
+        pc.addTrack(player.audio)
+        pc.addTrack(player.video)
+        capabilities = RTCRtpSender.getCapabilities("video")
+        preferences = list(filter(lambda x: x.name == "H264", capabilities.codecs))
+        preferences += list(filter(lambda x: x.name == "VP8", capabilities.codecs))
+        preferences += list(filter(lambda x: x.name == "rtx", capabilities.codecs))
+        transceiver = pc.getTransceivers()[1]
+        transceiver.setCodecPreferences(preferences)
 
-    await pc.setRemoteDescription(offer)
+        await pc.setRemoteDescription(rtc_offer)
 
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-    return web.Response(
-        content_type="application/json",
-        text=json.dumps(
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        return json_response(
             {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type, "sessionid": sessionid}
-        ),
-    )
+        )
+    except (ApiError, asyncio.CancelledError):
+        if sessionid in sessions:
+            await cleanup_session(sessionid, close_peer=pc is not None)
+        elif pc is not None and pc.connectionState != "closed":
+            await pc.close()
+        raise
+    except Exception:
+        if sessionid in sessions:
+            await cleanup_session(sessionid, close_peer=pc is not None)
+        elif pc is not None and pc.connectionState != "closed":
+            await pc.close()
+        raise
 
 
 async def human(request):
-    try:
-        params = await request.json()
+    params = await parse_json_object(request)
+    state = get_session(get_session_id(params))
+    request_type = params.get("type")
+    text = params.get("text")
+    if request_type not in {"echo", "chat"}:
+        raise ApiError(400, "invalid_type", "type must be 'echo' or 'chat'")
+    if not isinstance(text, str) or not text.strip():
+        raise ApiError(400, "invalid_text", "text must be a non-empty string")
+    if len(text) > 10000:
+        raise ApiError(400, "invalid_text", "text is too long")
 
-        sessionid = params.get('sessionid', 0)
-        if params.get('interrupt'):
-            nerfreals[sessionid].flush_talk()
+    interrupt = params.get("interrupt", False)
+    if not isinstance(interrupt, bool):
+        raise ApiError(400, "invalid_interrupt", "interrupt must be a boolean")
+    if interrupt:
+        state.nerfreal.flush_talk()
 
-        if params['type'] == 'echo':
-            nerfreals[sessionid].put_msg_txt(params['text'])
-        elif params['type'] == 'chat':
-            asyncio.get_event_loop().run_in_executor(None, llm_response, params['text'], nerfreals[sessionid])
-
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(
-                {"code": 0, "msg": "ok"}
-            ),
+    if request_type == "echo":
+        state.nerfreal.put_msg_txt(text)
+    else:
+        loop = asyncio.get_running_loop()
+        task = loop.run_in_executor(None, llm_response, text, state.nerfreal)
+        state.llm_tasks.add(task)
+        llm_tasks.add(task)
+        task.add_done_callback(
+            lambda completed, sessionid=state.sessionid: on_llm_task_done(sessionid, completed)
         )
-    except Exception as e:
-        logger.exception('exception:')
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(
-                {"code": -1, "msg": str(e)}
-            ),
-        )
+
+    return json_response({"code": 0, "msg": "ok"})
 
 
 async def interrupt_talk(request):
-    try:
-        params = await request.json()
-
-        sessionid = params.get('sessionid', 0)
-        nerfreals[sessionid].flush_talk()
-
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(
-                {"code": 0, "msg": "ok"}
-            ),
-        )
-    except Exception as e:
-        logger.exception('exception:')
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(
-                {"code": -1, "msg": str(e)}
-            ),
-        )
+    params = await parse_json_object(request)
+    state = get_session(get_session_id(params))
+    state.nerfreal.flush_talk()
+    return json_response({"code": 0, "msg": "ok"})
 
 
 async def humanaudio(request):
-    try:
-        form = await request.post()
-        sessionid = int(form.get('sessionid', 0))
-        fileobj = form["file"]
-        filename = fileobj.filename
-        filebytes = fileobj.file.read()
-        nerfreals[sessionid].put_audio_file(filebytes)
-
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(
-                {"code": 0, "msg": "ok"}
-            ),
-        )
-    except Exception as e:
-        logger.exception('exception:')
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(
-                {"code": -1, "msg": str(e)}
-            ),
-        )
+    form = await request.post()
+    state = get_session(get_session_id(form))
+    fileobj = form.get("file")
+    if fileobj is None or not hasattr(fileobj, "file"):
+        raise ApiError(400, "missing_file", "file is required")
+    filebytes = fileobj.file.read()
+    if not filebytes:
+        raise ApiError(400, "empty_file", "file must not be empty")
+    state.nerfreal.put_audio_file(filebytes)
+    return json_response({"code": 0, "msg": "ok"})
 
 
 async def set_audiotype(request):
-    try:
-        params = await request.json()
-
-        sessionid = params.get('sessionid', 0)
-        nerfreals[sessionid].set_custom_state(params['audiotype'], params['reinit'])
-
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(
-                {"code": 0, "msg": "ok"}
-            ),
-        )
-    except Exception as e:
-        logger.exception('exception:')
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(
-                {"code": -1, "msg": str(e)}
-            ),
-        )
+    params = await parse_json_object(request)
+    state = get_session(get_session_id(params))
+    if "audiotype" not in params:
+        raise ApiError(400, "invalid_audiotype", "audiotype is required")
+    reinit = params.get("reinit", True)
+    if not isinstance(reinit, bool):
+        raise ApiError(400, "invalid_reinit", "reinit must be a boolean")
+    state.nerfreal.set_custom_state(params["audiotype"], reinit)
+    return json_response({"code": 0, "msg": "ok"})
 
 
 async def record(request):
-    try:
-        params = await request.json()
-
-        sessionid = params.get('sessionid', 0)
-        if params['type'] == 'start_record':
-            # nerfreals[sessionid].put_msg_txt(params['text'])
-            nerfreals[sessionid].start_recording()
-        elif params['type'] == 'end_record':
-            nerfreals[sessionid].stop_recording()
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(
-                {"code": 0, "msg": "ok"}
-            ),
-        )
-    except Exception as e:
-        logger.exception('exception:')
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(
-                {"code": -1, "msg": str(e)}
-            ),
-        )
+    params = await parse_json_object(request)
+    state = get_session(get_session_id(params))
+    record_type = params.get("type")
+    if record_type == "start_record":
+        state.nerfreal.start_recording()
+    elif record_type == "end_record":
+        state.nerfreal.stop_recording()
+    else:
+        raise ApiError(400, "invalid_record_type", "type must be 'start_record' or 'end_record'")
+    return json_response({"code": 0, "msg": "ok"})
 
 
 async def is_speaking(request):
-    params = await request.json()
-
-    sessionid = params.get('sessionid', 0)
-    return web.Response(
-        content_type="application/json",
-        text=json.dumps(
-            {"code": 0, "data": nerfreals[sessionid].is_speaking()}
-        ),
-    )
+    params = await parse_json_object(request)
+    state = get_session(get_session_id(params))
+    return json_response({"code": 0, "data": state.nerfreal.is_speaking()})
 
 
 async def get_avatars(request):
     """获取所有可用的数字人列表"""
-    try:
-        config = get_avatars_config()
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(
-                {"code": 0, "data": config["avatars"]}
-            ),
-        )
-    except Exception as e:
-        logger.exception('get_avatars exception:')
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(
-                {"code": -1, "msg": str(e)}
-            ),
-        )
+    config = get_avatars_config()
+    return json_response({"code": 0, "data": config["avatars"]})
+
+
+async def health_live(request):
+    return json_response({"status": "ok"})
+
+
+async def health_ready(request):
+    ready = request.app[READY_KEY]
+    return json_response(
+        {
+            "status": "ready" if ready else "not_ready",
+            "active_sessions": len(sessions),
+            "max_sessions": request.app[MAX_SESSIONS_KEY],
+        },
+        status=200 if ready else 503,
+    )
 
 
 async def on_shutdown(app):
-    # close peer connections
-    coros = [pc.close() for pc in pcs]
-    await asyncio.gather(*coros)
+    await asyncio.gather(
+        *(cleanup_session(sessionid) for sessionid in list(sessions)),
+        return_exceptions=True,
+    )
+    for task in list(llm_tasks):
+        task.cancel()
+    llm_tasks.clear()
     pcs.clear()
 
 
-def build_app(*, serve_static: bool = True, serve_data_static: bool = True) -> web.Application:
+def build_app(
+        *,
+        serve_static: bool = True,
+        serve_data_static: bool = True,
+        max_sessions: int = 1,
+        ready: bool = True,
+) -> web.Application:
     """构建 aiohttp 应用，注册 API 与（可选的）静态资源路由。
 
     Args:
@@ -396,9 +498,19 @@ def build_app(*, serve_static: bool = True, serve_data_static: bool = True) -> w
     Returns:
         已注册路由、已挂上 CORS 与 shutdown 回调的 ``web.Application`` 实例。
     """
-    app = web.Application(client_max_size=1024 ** 2 * 100)
+    if max_sessions < 1:
+        raise ValueError("max_sessions must be at least 1")
+
+    app = web.Application(
+        client_max_size=DEFAULT_MAX_UPLOAD_SIZE,
+        middlewares=[api_error_middleware],
+    )
+    app[MAX_SESSIONS_KEY] = max_sessions
+    app[READY_KEY] = ready
     app.on_shutdown.append(on_shutdown)
 
+    app.router.add_get("/health/live", health_live)
+    app.router.add_get("/health/ready", health_ready)
     app.router.add_post("/offer", offer)
     app.router.add_post("/human", human)
     app.router.add_post("/humanaudio", humanaudio)
@@ -526,6 +638,8 @@ if __name__ == '__main__':
     appasync = build_app(
         serve_static=opt.serve_static,
         serve_data_static=opt.serve_data_static,
+        max_sessions=opt.max_session,
+        ready=True,
     )
 
     if opt.serve_static:
@@ -533,10 +647,9 @@ if __name__ == '__main__':
     else:
         logger.info('API-only 模式：前端请单独部署并把 apiBaseUrl 指向 http://%s:%s', opt.host, opt.port)
 
-    runner = web.AppRunner(appasync)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(runner.setup())
-    site = web.TCPSite(runner, opt.host, opt.port)
-    loop.run_until_complete(site.start())
-    loop.run_forever()
+    web.run_app(
+        appasync,
+        host=opt.host,
+        port=opt.port,
+        handler_cancellation=True,
+    )
