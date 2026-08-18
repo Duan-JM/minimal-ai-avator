@@ -116,11 +116,9 @@ class BuildAppIntegratedTests(unittest.TestCase):
 
 
 class BuildAppCorsTests(unittest.TestCase):
-    """The split-deployment scenario relies on permissive CORS without credentials."""
+    """CORS responses must never enable browser credentials."""
 
     def test_cors_does_not_allow_credentials(self):
-        # Read the source to assert the policy. Inspecting aiohttp_cors at
-        # runtime would require touching its private attributes.
         src = (BACKEND / "main.py").read_text(encoding="utf-8")
         self.assertIn("allow_credentials=False", src)
         self.assertNotIn("allow_credentials=True", src)

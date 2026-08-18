@@ -19,6 +19,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Set
+from urllib.parse import urlsplit
 
 backend_dir = os.path.abspath(os.path.dirname(__file__))
 if backend_dir not in sys.path:
@@ -31,7 +32,12 @@ from src.llm import llm_response
 from src.llm import clear_conversation_history
 from src.log import logger
 from src.get_file import http_get
-from src.config import get_model_download_config, get_avatar_download_config, get_avatars_config, get_avatar_config
+from src.config import (
+    get_avatar_config,
+    get_avatar_download_config,
+    get_avatars_config,
+    get_model_download_config,
+)
 
 
 @dataclass
@@ -170,6 +176,36 @@ def reserve_session(max_sessions: int) -> int:
             sessions[sessionid] = None
             return sessionid
     raise ApiError(503, "session_id_unavailable", "Unable to allocate a session")
+
+
+def parse_cors_origins(raw: str) -> list[str]:
+    if not raw.strip():
+        return []
+
+    origins = []
+    for value in raw.split(","):
+        candidate = value.strip().rstrip("/")
+        if not candidate:
+            continue
+        if candidate == "*":
+            origin = candidate
+        else:
+            parsed = urlsplit(candidate)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.path
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError(
+                    "AI_AVATAR_CORS_ORIGINS entries must be HTTP(S) origins "
+                    "without paths, queries, or fragments"
+                )
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+        if origin not in origins:
+            origins.append(origin)
+    return origins
 
 
 async def cleanup_session(sessionid: int, *, close_peer: bool = True) -> None:
@@ -485,6 +521,7 @@ def build_app(
         serve_data_static: bool = True,
         max_sessions: int = 1,
         ready: bool = True,
+        cors_origins: Optional[list[str]] = None,
 ) -> web.Application:
     """构建 aiohttp 应用，注册 API 与（可选的）静态资源路由。
 
@@ -494,6 +531,7 @@ def build_app(
         serve_data_static: 是否托管 ``data/`` 目录用于头像图片等媒体。
             分离部署时如果由 nginx/CDN 提供这些资源，可传 ``False`` 关闭。
             默认开启以避免破坏现有头像加载行为。
+        cors_origins: 允许跨域访问的浏览器 Origin。空列表表示仅同源。
 
     Returns:
         已注册路由、已挂上 CORS 与 shutdown 回调的 ``web.Application`` 实例。
@@ -530,18 +568,25 @@ def build_app(
     else:
         logger.info("Static frontend serving disabled (--no-static); API-only mode")
 
-    # CORS：默认放开所有来源，方便前端独立部署。
-    # 注意：allow_credentials 保持 False，避免与通配 Origin 组合时被浏览器拒绝；
-    # 当前前端的 fetch 也未发送 credentials，因此切换为 False 不会改变行为。
-    cors = aiohttp_cors.setup(app, defaults={
-        "*": aiohttp_cors.ResourceOptions(
-            allow_credentials=False,
-            expose_headers="*",
-            allow_headers="*",
+    if cors_origins is None:
+        cors_origins = parse_cors_origins(os.getenv("AI_AVATAR_CORS_ORIGINS", ""))
+    if cors_origins:
+        cors = aiohttp_cors.setup(
+            app,
+            defaults={
+                origin: aiohttp_cors.ResourceOptions(
+                    allow_credentials=False,
+                    expose_headers="*",
+                    allow_headers="*",
+                )
+                for origin in cors_origins
+            },
         )
-    })
-    for route in list(app.router.routes()):
-        cors.add(route)
+        for route in list(app.router.routes()):
+            cors.add(route)
+        logger.info(f"CORS enabled for origins: {', '.join(cors_origins)}")
+    else:
+        logger.info("CORS disabled; API accepts same-origin browser requests only")
 
     return app
 
@@ -594,7 +639,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--max_session', type=int, default=1)  # multi session count
     parser.add_argument('--port', type=int, default=8010, help="web listen port")
-    parser.add_argument('--host', type=str, default='0.0.0.0', help="web bind host")
+    parser.add_argument('--host', type=str, default='127.0.0.1', help="web bind host")
 
     # 前后端分离部署相关开关；默认与一体化部署一致，传入参数才会关闭对应的静态服务。
     parser.add_argument('--no-static', dest='serve_static', action='store_false', default=True,

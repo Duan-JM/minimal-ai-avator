@@ -263,7 +263,16 @@ uv run python backend/main.py --port 8010 --no-static
 - `--no-data-static`：可选，如果头像图片由 CDN/nginx 提供，关闭后端 `/data` 静态资源。
   默认保持开启，避免破坏头像加载。
 
-CORS 默认放开所有来源（`allow_credentials=False`），可直接被任意域名的前端访问。
+CORS 默认不添加跨域响应头，仅允许浏览器同源访问。前后端分离时通过
+`AI_AVATAR_CORS_ORIGINS` 显式列出前端 Origin，多个值用逗号分隔：
+
+```bash
+AI_AVATAR_CORS_ORIGINS=https://avatar.example.com \
+  uv run python backend/main.py --port 8010 --no-static
+```
+
+只填写 Origin（协议、域名、可选端口），不要包含路径。需要临时兼容任意来源时
+可以显式设置为 `*`，但不建议用于公网部署。
 
 ### 3. 单独运行前端（开发模式）
 
@@ -288,6 +297,16 @@ docker compose --profile split up --build
   容器启动时通过 `envsubst` 把 `BACKEND_API_URL`、`BACKEND_MEDIA_URL`、
   `FRONTEND_ICE_SERVERS_JSON` 注入 `config.js`，同一份镜像可以服务于不同环境。
 
+Compose 默认把后端的 `AI_AVATAR_CORS_ORIGINS` 设置为
+`http://localhost:8011`，并等待 `/health/ready` 通过后再启动前端。部署到其他
+域名时同时覆盖前端地址和允许来源：
+
+```bash
+BACKEND_API_URL=https://api.example.com \
+AI_AVATAR_CORS_ORIGINS=https://avatar.example.com \
+docker compose --profile split up --build
+```
+
 浏览器访问 `http://localhost:8011/index.html`。
 部署到公网时把 `BACKEND_API_URL` 改成浏览器实际可访问的后端域名/端口，
 建议前后端共用同一 HTTPS 入口（例如反向代理后同源），避免浏览器 mixed-content 拦截。
@@ -299,8 +318,8 @@ docker compose --profile split up --build
 - **WebRTC 可达性**：`/offer` 只完成信令，后续音视频直接走 WebRTC。
   在 NAT/容器/云主机环境下，请通过 `iceServers` 配置 STUN/TURN，
   否则 ICE candidate 可能无法穿透。
-- **跨域凭据**：后端默认 `allow_credentials=False`，前端的 `fetch` 不要传
-  `credentials: 'include'`，否则浏览器会因为通配 Origin 而拒绝响应。
+- **跨域凭据**：后端保持 `allow_credentials=False`，前端请求不携带 Cookie；
+  `AI_AVATAR_CORS_ORIGINS` 必须与浏览器地址栏中的前端 Origin 完全一致。
 - **失败恢复**：浏览器 API 请求默认 10 秒超时；会话已满、服务未就绪、网络
   断开等错误会显示明确提示。`talk.html` 提供重新连接入口，页面退出时会关闭
   PeerConnection、媒体轨和相关定时器。
@@ -408,6 +427,10 @@ AI_AVATAR_LOG_LEVEL=INFO uv run python backend/main.py
 uv run python backend/main.py --max_session 2
 ```
 
+直接运行时服务默认只监听 `127.0.0.1`。需要让局域网或反向代理访问时显式传入
+`--host 0.0.0.0`，并同时配置防火墙、反向代理和
+`AI_AVATAR_CORS_ORIGINS`；Docker 镜像已显式设置容器内监听地址。
+
 业务接口对无效 JSON、参数、会话和过大请求分别使用标准的 4xx/5xx HTTP
 状态码，并返回 `code`、`error`、`msg` 字段。音频上传及其他请求体上限为
 10 MiB。WebRTC 断开或服务退出时会清理媒体资源、LLM 任务引用和对话历史。
@@ -434,6 +457,7 @@ uv run python backend/main.py --max_session 2
 │   ├── config.template.js          # 容器启动时由 envsubst 渲染成 config.js
 │   └── docker-entrypoint.sh        # 渲染 config.js 的入口脚本
 ├── docker-compose.yml              # 一体化 / 分离两个 profile（integrated、split）
+├── Dockerfile                      # 固定 digest 的 GPU 运行镜像
 ├── pyproject.toml                  # uv 项目与依赖声明
 ├── uv.lock                         # uv 锁文件
 ├── run.sh                          # uv 启动脚本

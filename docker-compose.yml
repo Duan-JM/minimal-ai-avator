@@ -21,6 +21,18 @@ x-backend-common: &backend-common
     - ./backend/config.yml:/app/backend/config.yml:ro
   environment:
     - NVIDIA_VISIBLE_DEVICES=all
+  healthcheck:
+    test:
+      [
+        "CMD",
+        "python",
+        "-c",
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health/ready', timeout=3)",
+      ]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 120s
   deploy:
     resources:
       reservations:
@@ -43,7 +55,10 @@ services:
     <<: *backend-common
     container_name: aiavatar-backend
     profiles: ["split"]
-    command: ["--port", "8010", "--no-static"]
+    command: ["--host", "0.0.0.0", "--port", "8010", "--no-static"]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - AI_AVATAR_CORS_ORIGINS=${AI_AVATAR_CORS_ORIGINS:-http://localhost:8011}
     ports:
       - "8010:8010"
 
@@ -56,12 +71,13 @@ services:
     profiles: ["split"]
     restart: unless-stopped
     depends_on:
-      - aiavatar-backend
+      aiavatar-backend:
+        condition: service_healthy
     environment:
       # 浏览器需能访问到这里填的 URL；本地开发用 host 端口即可，
       # 公网部署替换为对外可达的后端域名（HTTPS 时也要用 https://）。
-      - BACKEND_API_URL=http://localhost:8010
-      - BACKEND_MEDIA_URL=http://localhost:8010
-      - FRONTEND_ICE_SERVERS_JSON=[]
+      - BACKEND_API_URL=${BACKEND_API_URL:-http://localhost:8010}
+      - BACKEND_MEDIA_URL=${BACKEND_MEDIA_URL:-http://localhost:8010}
+      - FRONTEND_ICE_SERVERS_JSON=${FRONTEND_ICE_SERVERS_JSON:-[]}
     ports:
       - "8011:80"

@@ -124,7 +124,7 @@ uv run python backend/src/wav2lip/genavatar.py \
 - **Runtime assets**: Models and avatar data belong under top-level `models/` and `data/`. The main service can download configured assets on first run.
 - **Service architecture**: Browser clients create a WebRTC offer to `/offer`; the backend creates a `HumanPlayer`, binds audio/video tracks, and uses the data channel for LLM/TTS events. Frontend URLs go through `window.apiUrl()` / `window.mediaUrl()` (see `frontend/static/api.js`) so the same client works whether the backend is same-origin or hosted on a separate domain.
 - **Inference modes**: Local mode loads Wav2Lip in the web/API process. Remote mode uses `--gpu_server_url` and `lipreal_remote.py` so CPU/web nodes can share a GPU service.
-- **Deployment modes**: Integrated mode (default) serves `frontend/static/` and `/data` from the API process. Split mode uses `--no-static` (and optionally `--no-data-static`) plus an independent static host (e.g. `frontend/Dockerfile` nginx image, or `frontend/serve.sh`). CORS is permissive (`allow_credentials=False`) so the browser can reach the backend cross-origin.
+- **Deployment modes**: Integrated mode (default) serves `frontend/static/` and `/data` from the API process. Split mode uses `--no-static` (and optionally `--no-data-static`) plus an independent static host (e.g. `frontend/Dockerfile` nginx image, or `frontend/serve.sh`). CORS defaults to same-origin; set `AI_AVATAR_CORS_ORIGINS` to the explicit frontend Origin(s) for split deployment.
 - **State management**: Active sessions are keyed by `sessionid` in `backend/main.py`. Clean up peer connections and session state on closed/failed WebRTC connections.
 - **Logging**: Use `from src.log import logger` in backend code. Prefer structured, actionable log messages; control verbosity with `AI_AVATAR_LOG_LEVEL`.
 - **Error handling**: Surface configuration, download, network, and inference errors explicitly. Do not silently ignore failures that affect media playback or model availability.
@@ -132,8 +132,8 @@ uv run python backend/src/wav2lip/genavatar.py \
 
 ### Infrastructure
 
-- **Dockerfile**: Builds from a GPU-capable PyTorch/Transformers image, installs system audio/video dependencies, syncs uv dependencies, and runs `python backend/main.py`.
-- **Docker Compose** (`docker-compose.yml`): Exposes two profiles. `integrated` runs a single `aiavatar` service on port 8010. `split` runs `aiavatar-backend` (port 8010, `--no-static`) plus `aiavatar-frontend` (nginx, port 8011). Both profiles mount `./models`, `./data`, and `./backend/config.yml`, and reserve one NVIDIA GPU for the backend container(s).
+- **Dockerfile**: Builds from an immutable digest of the GPU-capable PyTorch/Transformers image, installs system audio/video dependencies, syncs uv dependencies, and runs `python backend/main.py`.
+- **Docker Compose** (`docker-compose.yml`): Exposes two profiles. `integrated` runs a single `aiavatar` service on port 8010. `split` runs `aiavatar-backend` (port 8010, `--no-static`) plus `aiavatar-frontend` (nginx, port 8011). Backend services expose a `/health/ready` healthcheck; the split frontend waits for backend readiness. Both profiles mount `./models`, `./data`, and `./backend/config.yml`, and reserve one NVIDIA GPU for the backend container(s).
 - **Startup script** (`run.sh`): Convenience wrapper around `uv run python backend/main.py --avatar_id ... --port ...`.
 - **Docs/assets** (`docs/`): Images and troubleshooting notes used by project documentation.
 

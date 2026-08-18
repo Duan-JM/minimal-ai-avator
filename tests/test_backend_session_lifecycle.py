@@ -167,6 +167,64 @@ class BackendApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await response.json())["error"], "invalid_interrupt")
 
 
+class BackendCorsTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        main.sessions.clear()
+        main.llm_tasks.clear()
+
+    async def asyncTearDown(self):
+        main.sessions.clear()
+        main.llm_tasks.clear()
+
+    async def request_live(self, cors_origins, origin):
+        app = main.build_app(
+            serve_static=False,
+            serve_data_static=False,
+            cors_origins=cors_origins,
+        )
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            return await client.get("/health/live", headers={"Origin": origin})
+        finally:
+            await client.close()
+
+    async def test_same_origin_default_does_not_emit_cors_header(self):
+        response = await self.request_live([], "https://unexpected.example")
+        self.assertNotIn("Access-Control-Allow-Origin", response.headers)
+
+    async def test_origin_parser_normalizes_and_deduplicates(self):
+        self.assertEqual(
+            main.parse_cors_origins(
+                "https://frontend.example/, http://localhost:8011,"
+                "https://frontend.example"
+            ),
+            ["https://frontend.example", "http://localhost:8011"],
+        )
+
+    async def test_origin_parser_rejects_paths(self):
+        with self.assertRaisesRegex(ValueError, "without paths"):
+            main.parse_cors_origins("https://frontend.example/app")
+
+    async def test_allowed_origin_is_echoed(self):
+        response = await self.request_live(
+            ["https://frontend.example"],
+            "https://frontend.example",
+        )
+        self.assertEqual(
+            response.headers["Access-Control-Allow-Origin"],
+            "https://frontend.example",
+        )
+        self.assertNotIn("Access-Control-Allow-Credentials", response.headers)
+
+    async def test_unlisted_origin_is_rejected(self):
+        response = await self.request_live(
+            ["https://frontend.example"],
+            "https://unexpected.example",
+        )
+        self.assertNotIn("Access-Control-Allow-Origin", response.headers)
+
+
 class SessionLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         main.sessions.clear()
