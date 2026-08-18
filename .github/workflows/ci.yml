@@ -38,6 +38,12 @@ jobs:
       - name: Sync dependencies (frozen lock)
         run: uv sync --frozen
 
+      - name: Validate runtime configuration
+        run: |
+          PYTHONPATH=backend uv run --no-sync python -c \
+            "from src.config import load_config; config = load_config(); assert config.get('LLM'); assert config.get('TTS'); assert config.get('AVATARS')"
+          docker compose config --quiet
+
       - name: Run unit tests
         run: uv run --no-sync pytest -ra
 

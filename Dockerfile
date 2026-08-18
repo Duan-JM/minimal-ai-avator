@@ -1,4 +1,4 @@
-FROM huggingface/transformers-pytorch-gpu:latest
+FROM huggingface/transformers-pytorch-gpu:latest@sha256:4c7317881a534b22e18add49c925096fa902651fb0571c69f3cad58af3ea2c0f
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
@@ -31,4 +31,4 @@ VOLUME ["/app/models", "/app/data"]
 EXPOSE 8010
 
 ENTRYPOINT ["python", "backend/main.py"]
-CMD ["--port", "8010"]
+CMD ["--host", "0.0.0.0", "--port", "8010"]
